@@ -4,7 +4,7 @@ from datetime import datetime
 # CONFIGURATION
 # ============================================================
 PI_IP         = "192.168.43.181"
-SERVER_URL    = f"http://https://nexasens.onrender.com/receive"
+SERVER_URL    ="https://nexasens.onrender.com/receive"
 API_KEY       = "NEXASENS_SECRET_KEY"
 SEND_INTERVAL = 30 
 # ============================================================
@@ -16,8 +16,8 @@ SEND_INTERVAL = 30
 EDGES = {
     "ED01": {"temp": 33.0, "humidity": 65.0, "ammonia": 8.0},  
     "ED02": {"temp": 32.5, "humidity": 63.0, "ammonia": 7.5},  
-     "ED03": {"temp": 31.5, "humidity": 61.0, "ammonia": 9.0}, 
-     "ED04": {"temp": 34.0, "humidity": 67.0, "ammonia": 8.5}, 
+   #"ED03": {"temp": 31.5, "humidity": 61.0, "ammonia": 9.0}, 
+   #"ED04": {"temp": 34.0, "humidity": 67.0, "ammonia": 8.5}, 
 }
 
 # ============================================================
