@@ -12,8 +12,10 @@
     <nav>
         {% if session.get('role') == 'admin' %}
         <a href="/admin" class="nav-link active">◈ Panel Admin</a>
-        {% endif %}
+        <a href="/admin/view/{{ owner_id }}" class="nav-link">← Hangars</a>
+        {% else %}
         <a href="/" class="nav-link">← Hangars</a>
+        {% endif %}
         <a href="/hangar/{{ hangar_id }}" class="nav-link">{{ hangar_name }}</a>
         <a href="/history/{{ hangar_id }}" class="nav-link active">Historique</a>
         <a href="/alerts/{{ hangar_id }}" class="nav-link">Alertes</a>

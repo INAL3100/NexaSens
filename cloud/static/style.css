@@ -346,3 +346,7 @@ tr:hover td { background: var(--bg-elevated); }
 
 /* Edge right column — stack timestamp + remove button */
 .edge-right { margin-left:auto; display:flex; flex-direction:column; align-items:flex-end; gap:4px; }
+
+/* Fix alert table status badge wrapping */
+.alert-status-badge { font-size: 11px; padding: 3px 8px; border-radius: 20px; font-weight: 500; white-space: nowrap; display: inline-block; }
+td { white-space: nowrap; }

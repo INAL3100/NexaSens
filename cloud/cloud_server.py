@@ -440,18 +440,23 @@ def history(hid):
                      "alert_level":r[7],"alert":r[8],"timestamp":r[9]}
                     for r in query("SELECT temperature,humidity,ammonia,fan,heater,mister,ventilation,alert_level,alert,timestamp FROM readings WHERE hangar_id=? AND node_id=? AND DATE(timestamp)=? ORDER BY timestamp ASC",
                                    (hid, node, date))]
-    name = query("SELECT name FROM hangars WHERE id=?", (hid,), one=True)[0]
+    name  = query("SELECT name,user_id FROM hangars WHERE id=?", (hid,), one=True)
+    owner = name[1] if name else None
     return render_template("history.html", readings=readings, selected_date=date,
                            selected_node=node, node_ids=node_ids, node_pins=node_pins,
-                           hangar_id=hid, hangar_name=name)
+                           hangar_id=hid, hangar_name=name[0] if name else "",
+                           is_admin=session["role"]=="admin", owner_id=owner)
 
 @app.route("/alerts/<int:hid>")
 def alerts_page(hid):
     if "user_id" not in session: return redirect("/login")
     alerts = [{"id":r[0],"node_id":r[1],"message":r[2],"level":r[3],"status":r[4],"timestamp":r[5]}
               for r in query("SELECT id,node_id,message,level,status,timestamp FROM alerts WHERE hangar_id=? ORDER BY id DESC LIMIT 200", (hid,))]
-    name   = query("SELECT name FROM hangars WHERE id=?", (hid,), one=True)[0]
-    return render_template("alerts.html", alerts=alerts, hangar_id=hid, hangar_name=name)
+    row   = query("SELECT name,user_id FROM hangars WHERE id=?", (hid,), one=True)
+    owner = row[1] if row else None
+    return render_template("alerts.html", alerts=alerts, hangar_id=hid,
+                           hangar_name=row[0] if row else "",
+                           is_admin=session["role"]=="admin", owner_id=owner)
 
 @app.route("/update_alert/<int:aid>", methods=["POST"])
 def update_alert(aid):
