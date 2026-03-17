@@ -1,0 +1,27 @@
+<!-- ============================================================
+LOGIN.HTML
+============================================================ -->
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nexa Sens — Connexion</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="auth-body">
+<div class="auth-container">
+    <div class="auth-box">
+        <div class="auth-logo">⬡ Nexa Sens</div>
+        <p class="auth-subtitle">Surveillance avicole intelligente</p>
+        {% if error %}<div class="auth-error">{{ error }}</div>{% endif %}
+        <form method="POST" class="auth-form">
+            <input type="text" name="username" placeholder="Nom d'utilisateur" required>
+            <input type="password" name="password" placeholder="Mot de passe" required>
+            <button type="submit">Connexion</button>
+        </form>
+        <a href="/register" class="auth-link">Créer un compte</a>
+    </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nexa Sens — Historique</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+    <div class="logo">⬡ Nexa Sens</div>
+    <nav>
+        {% if session.get('role') == 'admin' %}
+        <a href="/admin" class="nav-link active">◈ Panel Admin</a>
+        {% endif %}
+        <a href="/" class="nav-link">← Hangars</a>
+        <a href="/hangar/{{ hangar_id }}" class="nav-link">{{ hangar_name }}</a>
+        <a href="/history/{{ hangar_id }}" class="nav-link active">Historique</a>
+        <a href="/alerts/{{ hangar_id }}" class="nav-link">Alertes</a>
+    </nav>
+    <div class="user-menu">
+        <span class="user-btn">{{ session.get('username') }}</span>
+        <div class="dropdown"><a href="/logout">Déconnexion</a></div>
+    </div>
+</header>
+
+<main>
+    <h1 class="page-title">Historique — {{ hangar_name }}</h1>
+
+    <form method="get" class="filter-form">
+        <div class="filter-group">
+            <label>Date</label>
+            <input type="date" name="date" value="{{ selected_date }}">
+        </div>
+        <div class="filter-group">
+            <label>NS-Edge</label>
+            <select name="node">
+                {% for nid in node_ids %}
+                <option value="{{ nid }}" {% if nid == selected_node %}selected{% endif %}>
+                    {{ nid }}{% if node_pins[nid] %} · {{ node_pins[nid] }}{% endif %}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+        <button type="submit" class="filter-btn">Appliquer</button>
+    </form>
+
+    {% if readings %}
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>Heure</th>
+                    <th>🌡️ Temp</th>
+                    <th>💧 Hum</th>
+                    <th>☁️ NH3</th>
+                    <th>Ventilateur</th>
+                    <th>Chauffage</th>
+                    <th>Brumisateur</th>
+                    <th>Statut</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for r in readings %}
+                <tr>
+                    <td style="font-family:var(--mono);font-size:12px">{{ r.timestamp[11:19] }}</td>
+                    <td>{{ r.temperature }}°C</td>
+                    <td>{{ r.humidity }}%</td>
+                    <td>{{ r.ammonia }} ppm</td>
+                    <td class="{% if r.fan == 'ON' %}cell-on{% else %}cell-off{% endif %}">{{ r.fan }}</td>
+                    <td class="{% if r.heater == 'ON' %}cell-on{% else %}cell-off{% endif %}">{{ r.heater }}</td>
+                    <td class="{% if r.mister == 'ON' %}cell-on{% else %}cell-off{% endif %}">{{ r.mister }}</td>
+                    <td>
+                        <span class="alert-status-badge
+                            {% if r.alert_level == 'critical' %}status-danger
+                            {% elif r.alert_level == 'notify' %}status-warning
+                            {% else %}status-ok{% endif %}">
+                            {% if r.alert_level == 'critical' %}🚨 Critique
+                            {% elif r.alert_level == 'notify' %}🔔 Attention
+                            {% else %}✓ Normal{% endif %}
+                        </span>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="no-data"><p>Aucune donnée pour cette sélection.</p></div>
+    {% endif %}
+</main>
+</body>
+</html>

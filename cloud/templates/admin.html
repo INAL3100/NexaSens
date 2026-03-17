@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nexa Sens — Admin</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+    <div class="logo">⬡ Nexa Sens</div>
+    <nav>
+        <a href="/admin" class="nav-link active">Panel Admin</a>
+    </nav>
+    <div class="user-menu">
+        <span class="user-btn">Admin</span>
+        <div class="dropdown"><a href="/logout">Déconnexion</a></div>
+    </div>
+</header>
+
+<main>
+    <h1 class="page-title">Panel Administrateur</h1>
+
+    <!-- CLIENTS LIST -->
+    <div class="admin-section">
+        <h2 class="section-title">Clients</h2>
+        {% if clients %}
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Nom d'utilisateur</th>
+                        <th>Téléphone</th>
+                        <th>Statut</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for c in clients %}
+                    <tr>
+                        <td>{{ c.username }}</td>
+                        <td>{{ c.phone }}</td>
+                        <td>
+                            <span class="status-badge {% if c.active %}status-ok{% else %}status-danger{% endif %}">
+                                {% if c.active %}Actif{% else %}Désactivé{% endif %}
+                            </span>
+                        </td>
+                        <td class="action-btns">
+                            <a href="/admin/view/{{ c.id }}" class="btn-small">👁 Voir</a>
+                            <form method="POST" action="/admin/toggle_client/{{ c.id }}" style="display:inline">
+                                <button type="submit" class="btn-small {% if c.active %}btn-danger{% else %}btn-success{% endif %}">
+                                    {% if c.active %}Désactiver{% else %}Activer{% endif %}
+                                </button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="no-data"><p>Aucun client enregistré.</p></div>
+        {% endif %}
+    </div>
+
+    <!-- GENERATE PINS -->
+    <div class="admin-section">
+        <h2 class="section-title">Générer des PINs</h2>
+        <form method="POST" action="/admin/generate_pin" class="pin-form">
+            <div class="filter-group">
+                <label>Type de PIN</label>
+                <select name="pin_type">
+                    <option value="nsr_box">NSR-BOX</option>
+                    <option value="ns_edge">NS-Edge</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <label>Quantité</label>
+                <input type="number" name="count" value="1" min="1" max="20">
+            </div>
+            <button type="submit" class="btn-primary">Générer</button>
+        </form>
+    </div>
+
+    <!-- PINS LIST -->
+    <div class="admin-section">
+        <h2 class="section-title">PINs disponibles</h2>
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>PIN</th>
+                        <th>Type</th>
+                        <th>Statut</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for p in pins %}
+                    <tr>
+                        <td style="font-family: monospace; font-weight:bold; letter-spacing:2px">{{ p.pin }}</td>
+                        <td>{{ p.type }}</td>
+                        <td>
+                            <span class="status-badge {% if not p.used %}status-ok{% else %}status-danger{% endif %}">
+                                {% if not p.used %}Disponible{% else %}Utilisé{% endif %}
+                            </span>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</main>
+</body>
+</html>

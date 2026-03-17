@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nexa Sens — Hangars</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+    <div class="logo">⬡ Nexa Sens</div>
+    <nav>
+        {% if viewing_as %}
+        <a href="/admin" class="nav-link active">◈ Panel Admin</a>
+        <span class="nav-viewing">Vue: {{ viewing_as }}</span>
+        {% endif %}
+    </nav>
+    <div class="user-menu">
+        <span class="user-btn">{{ username }}</span>
+        <div class="dropdown"><a href="/logout">Déconnexion</a></div>
+    </div>
+</header>
+
+<main>
+    <h1 class="page-title">{% if viewing_as %}Vue client — {{ viewing_as }}{% else %}Mes Hangars{% endif %}</h1>
+
+    <div class="hangars-list">
+        {% for h in hangars %}
+
+        {% if h.avg %}
+            {% if h.avg.alert_level == "critical" %}{% set cls = "card-critical" %}
+            {% elif h.avg.alert_level == "notify" %}{% set cls = "card-warning" %}
+            {% else %}{% set cls = "" %}{% endif %}
+        {% else %}{% set cls = "" %}{% endif %}
+
+        <a href="/hangar/{{ h.id }}" class="hangar-card {{ cls }}">
+
+            <!-- TOP ROW -->
+            <div class="hcard-top">
+                <div class="hcard-left">
+                    <span class="hcard-icon">🏠</span>
+                    <div>
+                        <div class="hcard-name">{{ h.name }}</div>
+                        <div class="hcard-sub">Semaine {{ h.flock_age }}{% if h.nsr_pin %} · Master: {{ h.nsr_pin }}{% endif %}</div>
+                    </div>
+                </div>
+                <div class="hcard-right">
+                    {% if h.alert_count > 0 %}
+                    <span class="alert-badge {% if cls == 'card-critical' %}badge-critical{% else %}badge-warning{% endif %}">
+                        {{ h.alert_count }} alerte{% if h.alert_count > 1 %}s{% endif %}
+                    </span>
+                    {% endif %}
+                    <span class="hcard-arrow">→</span>
+                </div>
+            </div>
+
+            <!-- NSR GADGET -->
+            {% if h.avg %}
+            <div class="nsr-gadget">
+                <div class="mini-gauges">
+
+                    <!-- TEMP -->
+                    {% set temp = h.avg.temperature %}
+                    {% set tmax = h.thresholds.temp_max %}
+                    {% set tmin = h.thresholds.temp_min %}
+                    {% if temp > tmax + 2 or temp < tmin - 2 %}{% set tc = "#ef4444" %}
+                    {% elif temp > tmax or temp < tmin %}{% set tc = "#f59e0b" %}
+                    {% else %}{% set tc = "#0ea5e9" %}{% endif %}
+                    <div class="mini-gauge">
+                        <svg viewBox="0 0 80 48" class="mini-svg">
+                            <path d="M8,44 A32,32 0 0,1 72,44" fill="none" stroke="#1e2d42" stroke-width="7" stroke-linecap="round"/>
+                            <path d="M8,44 A32,32 0 0,1 72,44" fill="none" stroke="{{ tc }}" stroke-width="7" stroke-linecap="round"
+                                  stroke-dasharray="100" stroke-dashoffset="{{ [100 - ((temp|float / 50 * 100)|int), 0]|max }}"/>
+                            <text x="40" y="37" text-anchor="middle" fill="#e2e8f0" font-size="11" font-weight="bold">{{ temp }}°</text>
+                            <text x="40" y="46" text-anchor="middle" fill="#64748b" font-size="6">Temp</text>
+                        </svg>
+                    </div>
+
+                    <!-- HUM -->
+                    {% set hum = h.avg.humidity %}
+                    {% set hmax = h.thresholds.hum_max %}
+                    {% set hmin = h.thresholds.hum_min %}
+                    {% if hum > hmax + 4 or hum < hmin - 4 %}{% set hc = "#ef4444" %}
+                    {% elif hum > hmax or hum < hmin %}{% set hc = "#f59e0b" %}
+                    {% else %}{% set hc = "#0ea5e9" %}{% endif %}
+                    <div class="mini-gauge">
+                        <svg viewBox="0 0 80 48" class="mini-svg">
+                            <path d="M8,44 A32,32 0 0,1 72,44" fill="none" stroke="#1e2d42" stroke-width="7" stroke-linecap="round"/>
+                            <path d="M8,44 A32,32 0 0,1 72,44" fill="none" stroke="{{ hc }}" stroke-width="7" stroke-linecap="round"
+                                  stroke-dasharray="100" stroke-dashoffset="{{ [100 - ((hum|float / 100 * 100)|int), 0]|max }}"/>
+                            <text x="40" y="37" text-anchor="middle" fill="#e2e8f0" font-size="11" font-weight="bold">{{ hum }}%</text>
+                            <text x="40" y="46" text-anchor="middle" fill="#64748b" font-size="6">Hum</text>
+                        </svg>
+                    </div>
+
+                    <!-- NH3 -->
+                    {% set nh3 = h.avg.ammonia %}
+                    {% set amax = h.thresholds.ammonia_max %}
+                    {% if nh3 > amax + 2 %}{% set ac = "#ef4444" %}
+                    {% elif nh3 > amax %}{% set ac = "#f59e0b" %}
+                    {% else %}{% set ac = "#0ea5e9" %}{% endif %}
+                    <div class="mini-gauge">
+                        <svg viewBox="0 0 80 48" class="mini-svg">
+                            <path d="M8,44 A32,32 0 0,1 72,44" fill="none" stroke="#1e2d42" stroke-width="7" stroke-linecap="round"/>
+                            <path d="M8,44 A32,32 0 0,1 72,44" fill="none" stroke="{{ ac }}" stroke-width="7" stroke-linecap="round"
+                                  stroke-dasharray="100" stroke-dashoffset="{{ [100 - ((nh3|float / 40 * 100)|int), 0]|max }}"/>
+                            <text x="40" y="37" text-anchor="middle" fill="#e2e8f0" font-size="11" font-weight="bold">{{ nh3 }}</text>
+                            <text x="40" y="46" text-anchor="middle" fill="#64748b" font-size="6">NH3</text>
+                        </svg>
+                    </div>
+
+                </div>
+                <div class="mini-equipment">
+                    <span class="mini-equip {% if h.avg.fan == 'ON' %}me-on{% else %}me-off{% endif %}">🌀 {{ h.avg.fan }}</span>
+                    <span class="mini-equip {% if h.avg.heater == 'ON' %}me-on{% else %}me-off{% endif %}">🔥 {{ h.avg.heater }}</span>
+                    <span class="mini-equip {% if h.avg.mister == 'ON' %}me-on{% else %}me-off{% endif %}">💦 {{ h.avg.mister }}</span>
+                    <span class="mini-equip {% if h.avg.ventilation == 'ON' %}me-on{% else %}me-off{% endif %}">💨 {{ h.avg.ventilation }}</span>
+                </div>
+            </div>
+            {% else %}
+            <div class="nsr-no-data">📡 En attente de données…</div>
+            {% endif %}
+
+            <!-- THRESHOLDS -->
+            <div class="hcard-thresholds">
+                <span class="threshold-tag">🌡️ {{ h.thresholds.temp_min }}–{{ h.thresholds.temp_max }}°C</span>
+                <span class="threshold-tag">💧 {{ h.thresholds.hum_min }}–{{ h.thresholds.hum_max }}%</span>
+                <span class="threshold-tag">☁️ max {{ h.thresholds.ammonia_max }} ppm</span>
+            </div>
+
+        </a>
+        {% endfor %}
+
+        {% if hangars|length < 3 and not viewing_as %}
+        <form method="POST" action="/add_hangar">
+            <button type="submit" class="hangar-card hangar-add">
+                <div class="hcard-left">
+                    <span class="hcard-icon add-icon">+</span>
+                    <span class="hcard-name">Ajouter un hangar</span>
+                </div>
+            </button>
+        </form>
+        {% endif %}
+    </div>
+</main>
+</body>
+</html>

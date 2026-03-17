@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nexa Sens — {{ hangar.name }}</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+    <div class="logo">⬡ Nexa Sens</div>
+    <nav>
+        {% if is_admin %}
+        <a href="/admin" class="nav-link active">◈ Panel Admin</a>
+        <a href="/admin/view/{{ owner_id }}" class="nav-link">← Hangars</a>
+        {% else %}
+        <a href="/" class="nav-link">← Hangars</a>
+        {% endif %}
+        <a href="/hangar/{{ hangar.id }}" class="nav-link active">{{ hangar.name }}</a>
+        <a href="/history/{{ hangar.id }}" class="nav-link">Historique</a>
+        <a href="/alerts/{{ hangar.id }}" class="nav-link">
+            Alertes{% if active_alerts %}<span class="alert-count">{{ active_alerts|length }}</span>{% endif %}
+        </a>
+    </nav>
+    <div class="user-menu">
+        <span class="user-btn">{{ username }}</span>
+        <div class="dropdown"><a href="/logout">Déconnexion</a></div>
+    </div>
+</header>
+
+{% for a in active_alerts %}
+{% if a[3] == 'critical' %}<div class="alert-banner banner-critical">🚨 {{ a[2] }} <span class="banner-time">{{ a[5] }}</span></div>
+{% elif a[3] == 'notify' %}<div class="alert-banner banner-notify">🔔 {{ a[2] }} <span class="banner-time">{{ a[5] }}</span></div>
+{% endif %}
+{% endfor %}
+
+<main>
+    <h1 class="page-title">{{ hangar.name }}</h1>
+
+    <!-- NSR-BOX TOP BAR -->
+    {% if avg %}
+    <div class="nsr-bar {% if avg.alert_level == 'critical' %}nsr-bar-critical{% elif avg.alert_level == 'notify' %}nsr-bar-warning{% endif %}">
+        <div class="nsr-bar-left">
+            <span class="nsr-bar-label">◈ NSR-BOX{% if hangar.nsr_pin %} · {{ hangar.nsr_pin }}{% endif %}</span>
+            <span class="nsr-bar-sep">|</span>
+            <span class="nsr-bar-val">🌡️ <strong>{{ avg.temperature }}°C</strong></span>
+            <span class="nsr-bar-val">💧 <strong>{{ avg.humidity }}%</strong></span>
+            <span class="nsr-bar-val">☁️ <strong>{{ avg.ammonia }} ppm</strong></span>
+        </div>
+        <span class="status-badge {% if avg.alert_level == 'critical' %}status-danger{% elif avg.alert_level == 'notify' %}status-warning{% else %}status-ok{% endif %}">
+            {% if avg.alert_level == 'critical' %}🚨 Critique{% elif avg.alert_level == 'notify' %}🔔 Attention{% else %}✓ Normal{% endif %}
+        </span>
+    </div>
+    {% endif %}
+
+    <!-- FLOCK AGE + THRESHOLDS (inline editable) -->
+    <div class="thresh-block">
+        <div class="thresh-header">
+            <div class="age-row">
+                <span class="thresh-section-title">⚙️ Seuils — Semaine</span>
+                <form method="POST" action="/update_age/{{ hangar.id }}" class="age-inline-form">
+                    <input type="number" name="flock_age" value="{{ hangar.flock_age }}"
+                           min="1" max="10" class="age-input"
+                           onchange="this.form.submit()">
+                </form>
+            </div>
+            <span class="thresh-hint">Cliquez sur une valeur pour la modifier</span>
+        </div>
+        <div class="thresh-values">
+            <div class="thresh-item">
+                <span class="thresh-label-big">🌡️ Temp min</span>
+                <span class="thresh-val-big editable" data-field="temp_min" data-value="{{ thresholds.temp_min }}">{{ thresholds.temp_min }}</span>
+                <span class="thresh-unit-big">°C</span>
+            </div>
+            <div class="thresh-item">
+                <span class="thresh-label-big">🌡️ Temp max</span>
+                <span class="thresh-val-big editable" data-field="temp_max" data-value="{{ thresholds.temp_max }}">{{ thresholds.temp_max }}</span>
+                <span class="thresh-unit-big">°C</span>
+            </div>
+            <div class="thresh-item">
+                <span class="thresh-label-big">💧 Hum min</span>
+                <span class="thresh-val-big editable" data-field="hum_min" data-value="{{ thresholds.hum_min }}">{{ thresholds.hum_min }}</span>
+                <span class="thresh-unit-big">%</span>
+            </div>
+            <div class="thresh-item">
+                <span class="thresh-label-big">💧 Hum max</span>
+                <span class="thresh-val-big editable" data-field="hum_max" data-value="{{ thresholds.hum_max }}">{{ thresholds.hum_max }}</span>
+                <span class="thresh-unit-big">%</span>
+            </div>
+            <div class="thresh-item">
+                <span class="thresh-label-big">☁️ NH3 max</span>
+                <span class="thresh-val-big editable" data-field="ammonia_max" data-value="{{ thresholds.ammonia_max }}">{{ thresholds.ammonia_max }}</span>
+                <span class="thresh-unit-big">ppm</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- EQUIPMENT -->
+    {% if avg %}
+    <div class="equipment-block">
+        <p class="equip-label">Équipements <span class="equip-hint">ON · OFF · AUTO</span></p>
+        <div class="equipment">
+
+            <div class="equip-item {% if avg.fan == 'ON' %}equip-on{% else %}equip-off{% endif %}">
+                <span class="equip-icon">🌀</span>
+                <span class="equip-name">Ventilateur</span>
+                <span class="equip-state">{{ hangar.eq_fan if hangar.eq_fan != 'AUTO' else avg.fan }}</span>
+                <div class="equip-btns">
+                    <form method="POST" action="/control/{{ hangar.id }}/eq_fan/ON"><button class="ebtn {% if hangar.eq_fan == 'ON' %}ebtn-active{% endif %}">ON</button></form>
+                    <form method="POST" action="/control/{{ hangar.id }}/eq_fan/OFF"><button class="ebtn {% if hangar.eq_fan == 'OFF' %}ebtn-active{% endif %}">OFF</button></form>
+                    <form method="POST" action="/control/{{ hangar.id }}/eq_fan/AUTO"><button class="ebtn {% if hangar.eq_fan == 'AUTO' %}ebtn-active{% endif %}">AUTO</button></form>
+                </div>
+            </div>
+
+            <div class="equip-item {% if avg.heater == 'ON' %}equip-on{% else %}equip-off{% endif %}">
+                <span class="equip-icon">🔥</span>
+                <span class="equip-name">Chauffage</span>
+                <span class="equip-state">{{ hangar.eq_heater if hangar.eq_heater != 'AUTO' else avg.heater }}</span>
+                <div class="equip-btns">
+                    <form method="POST" action="/control/{{ hangar.id }}/eq_heater/ON"><button class="ebtn {% if hangar.eq_heater == 'ON' %}ebtn-active{% endif %}">ON</button></form>
+                    <form method="POST" action="/control/{{ hangar.id }}/eq_heater/OFF"><button class="ebtn {% if hangar.eq_heater == 'OFF' %}ebtn-active{% endif %}">OFF</button></form>
+                    <form method="POST" action="/control/{{ hangar.id }}/eq_heater/AUTO"><button class="ebtn {% if hangar.eq_heater == 'AUTO' %}ebtn-active{% endif %}">AUTO</button></form>
+                </div>
+            </div>
+
+            <div class="equip-item {% if avg.mister == 'ON' %}equip-on{% else %}equip-off{% endif %}">
+                <span class="equip-icon">💦</span>
+                <span class="equip-name">Brumisateur</span>
+                <span class="equip-state">{{ hangar.eq_mister if hangar.eq_mister != 'AUTO' else avg.mister }}</span>
+                <div class="equip-btns">
+                    <form method="POST" action="/control/{{ hangar.id }}/eq_mister/ON"><button class="ebtn {% if hangar.eq_mister == 'ON' %}ebtn-active{% endif %}">ON</button></form>
+                    <form method="POST" action="/control/{{ hangar.id }}/eq_mister/OFF"><button class="ebtn {% if hangar.eq_mister == 'OFF' %}ebtn-active{% endif %}">OFF</button></form>
+                    <form method="POST" action="/control/{{ hangar.id }}/eq_mister/AUTO"><button class="ebtn {% if hangar.eq_mister == 'AUTO' %}ebtn-active{% endif %}">AUTO</button></form>
+                </div>
+            </div>
+
+            <div class="equip-item {% if avg.ventilation == 'ON' %}equip-on{% else %}equip-off{% endif %}">
+                <span class="equip-icon">💨</span>
+                <span class="equip-name">Ventilation</span>
+                <span class="equip-state">{{ hangar.eq_ventilation if hangar.eq_ventilation != 'AUTO' else avg.ventilation }}</span>
+                <div class="equip-btns">
+                    <form method="POST" action="/control/{{ hangar.id }}/eq_ventilation/ON"><button class="ebtn {% if hangar.eq_ventilation == 'ON' %}ebtn-active{% endif %}">ON</button></form>
+                    <form method="POST" action="/control/{{ hangar.id }}/eq_ventilation/OFF"><button class="ebtn {% if hangar.eq_ventilation == 'OFF' %}ebtn-active{% endif %}">OFF</button></form>
+                    <form method="POST" action="/control/{{ hangar.id }}/eq_ventilation/AUTO"><button class="ebtn {% if hangar.eq_ventilation == 'AUTO' %}ebtn-active{% endif %}">AUTO</button></form>
+                </div>
+            </div>
+
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- ADD NS-EDGE -->
+    <div class="settings-panel">
+        <h4 style="margin-bottom:12px">📡 Ajouter un NS-Edge</h4>
+        {% if error %}<div class="auth-error" style="margin-bottom:10px">{{ error }}</div>{% endif %}
+        <form method="POST" action="/add_node/{{ hangar.id }}" class="add-node-form">
+            <input type="text" name="pin" placeholder="PIN (ex: ED02)" maxlength="4" style="text-transform:uppercase">
+            <button type="submit" class="btn-primary">Ajouter</button>
+        </form>
+    </div>
+
+    <!-- EDGE CARDS -->
+    {% if nodes %}
+    <h2 class="section-sub">📡 Capteurs NS-Edge</h2>
+    <div class="edges-list">
+        {% for node_id, data in nodes.items() %}
+
+        {% if data.offline %}{% set ecls = "edge-offline" %}
+        {% elif data.alert_level == 'critical' %}{% set ecls = "edge-critical" %}
+        {% elif data.alert_level == 'notify' %}{% set ecls = "edge-warning" %}
+        {% else %}{% set ecls = "" %}{% endif %}
+
+        <div class="edge-card {{ ecls }}">
+            <div class="edge-left">
+                <span class="node-name">{{ node_id }} · {{ data.pin }}</span>
+                {% if data.offline %}<span class="edge-status offline-badge">⛔ Hors ligne</span>
+                {% elif data.alert_level == 'critical' %}<span class="edge-status critical-badge">🚨 Critique</span>
+                {% elif data.alert_level == 'notify' %}<span class="edge-status warning-badge">🔔 Attention</span>
+                {% else %}<span class="edge-status ok-badge">✓ Normal</span>{% endif %}
+            </div>
+
+            {% if not data.offline and data.temperature is not none %}
+            <div class="edge-sensors">
+
+                <!-- TEMP GAUGE -->
+                {% set temp = data.temperature %}
+                {% if temp > thresholds.temp_max + 2 or temp < thresholds.temp_min - 2 %}{% set tc = "#ef4444" %}
+                {% elif temp > thresholds.temp_max or temp < thresholds.temp_min %}{% set tc = "#f59e0b" %}
+                {% else %}{% set tc = "#0ea5e9" %}{% endif %}
+                <div class="gauge-wrap">
+                    <svg viewBox="0 0 120 72" class="gauge-svg">
+                        <path d="M12,66 A48,48 0 0,1 108,66" fill="none" stroke="#1e2d42" stroke-width="10" stroke-linecap="round"/>
+                        <path d="M12,66 A48,48 0 0,1 108,66" fill="none" stroke="{{ tc }}" stroke-width="10" stroke-linecap="round"
+                              stroke-dasharray="151" stroke-dashoffset="{{ [151 - ((temp|float / 50 * 151)|int), 0]|max }}"/>
+                        <text x="60" y="52" text-anchor="middle" fill="#e2e8f0" font-size="16" font-weight="bold">{{ temp }}°C</text>
+                        <text x="60" y="65" text-anchor="middle" fill="#64748b" font-size="7">Température</text>
+                    </svg>
+                </div>
+
+                <!-- HUM GAUGE -->
+                {% set hum = data.humidity %}
+                {% if hum > thresholds.hum_max + 4 or hum < thresholds.hum_min - 4 %}{% set hc = "#ef4444" %}
+                {% elif hum > thresholds.hum_max or hum < thresholds.hum_min %}{% set hc = "#f59e0b" %}
+                {% else %}{% set hc = "#0ea5e9" %}{% endif %}
+                <div class="gauge-wrap">
+                    <svg viewBox="0 0 120 72" class="gauge-svg">
+                        <path d="M12,66 A48,48 0 0,1 108,66" fill="none" stroke="#1e2d42" stroke-width="10" stroke-linecap="round"/>
+                        <path d="M12,66 A48,48 0 0,1 108,66" fill="none" stroke="{{ hc }}" stroke-width="10" stroke-linecap="round"
+                              stroke-dasharray="151" stroke-dashoffset="{{ [151 - ((hum|float / 100 * 151)|int), 0]|max }}"/>
+                        <text x="60" y="52" text-anchor="middle" fill="#e2e8f0" font-size="16" font-weight="bold">{{ hum }}%</text>
+                        <text x="60" y="65" text-anchor="middle" fill="#64748b" font-size="7">Humidité</text>
+                    </svg>
+                </div>
+
+                <!-- NH3 GAUGE -->
+                {% set nh3 = data.ammonia %}
+                {% if nh3 > thresholds.ammonia_max + 2 %}{% set ac = "#ef4444" %}
+                {% elif nh3 > thresholds.ammonia_max %}{% set ac = "#f59e0b" %}
+                {% else %}{% set ac = "#0ea5e9" %}{% endif %}
+                <div class="gauge-wrap">
+                    <svg viewBox="0 0 120 72" class="gauge-svg">
+                        <path d="M12,66 A48,48 0 0,1 108,66" fill="none" stroke="#1e2d42" stroke-width="10" stroke-linecap="round"/>
+                        <path d="M12,66 A48,48 0 0,1 108,66" fill="none" stroke="{{ ac }}" stroke-width="10" stroke-linecap="round"
+                              stroke-dasharray="151" stroke-dashoffset="{{ [151 - ((nh3|float / 40 * 151)|int), 0]|max }}"/>
+                        <text x="60" y="52" text-anchor="middle" fill="#e2e8f0" font-size="16" font-weight="bold">{{ nh3 }}</text>
+                        <text x="60" y="65" text-anchor="middle" fill="#64748b" font-size="7">NH3 ppm</text>
+                    </svg>
+                </div>
+
+            </div>
+            {% else %}
+            <div style="color:var(--text-muted);font-size:13px;padding:8px">Aucune donnée</div>
+            {% endif %}
+
+            <div class="edge-right">
+                <span class="node-timestamp">{{ data.timestamp or '—' }}</span>
+                <form method="POST" action="/remove_node/{{ hangar.id }}/{{ node_id }}"
+                      onsubmit="return confirm('Supprimer {{ node_id }} de ce hangar ?')">
+                    <button type="submit" class="btn-small btn-danger" style="margin-top:6px">🗑️ Retirer</button>
+                </form>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+
+    {% else %}
+    <div class="no-data">
+        <p style="font-size:36px">📡</p>
+        <p>Ajoutez un NS-Edge avec son PIN ci-dessus.</p>
+    </div>
+    {% endif %}
+
+</main>
+
+<script>
+const HANGAR_ID = {{ hangar.id }};
+
+// ── INLINE THRESHOLD EDITING ──────────────────────────
+document.querySelectorAll('.editable').forEach(el => {
+    el.addEventListener('click', function() {
+        if (this.querySelector('input')) return;
+        const field = this.dataset.field;
+        const original = parseFloat(this.dataset.value);
+        const input = document.createElement('input');
+        input.type = 'number';
+        input.value = original;
+        input.step = '0.5';
+        input.className = 'thresh-input-inline';
+        this.textContent = '';
+        this.appendChild(input);
+        input.focus();
+        input.select();
+
+        const save = async () => {
+            const val = parseFloat(input.value);
+            if (isNaN(val)) { this.textContent = original; this.dataset.value = original; return; }
+            const res = await fetch(`/set_threshold/${HANGAR_ID}`, {
+                method: 'POST',
+                headers: {'Content-Type':'application/json'},
+                body: JSON.stringify({field, value: val})
+            });
+            const data = await res.json();
+            if (data.ok) {
+                this.textContent = val;
+                this.dataset.value = val;
+            } else {
+                this.textContent = original;
+                alert('Erreur: ' + (data.error || 'inconnue'));
+            }
+        };
+        input.addEventListener('keydown', e => {
+            if (e.key === 'Enter') { input.blur(); }
+            if (e.key === 'Escape') { this.textContent = original; }
+        });
+        input.addEventListener('blur', save);
+    });
+});
+
+// Auto-reload every 60s
+setTimeout(() => location.reload(), 60000);
+</script>
+</body>
+</html>

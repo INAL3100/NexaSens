@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nexa Sens — Alertes</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+    <div class="logo">⬡ Nexa Sens</div>
+    <nav>
+        {% if session.get('role') == 'admin' %}
+        <a href="/admin" class="nav-link active">◈ Panel Admin</a>
+        {% endif %}
+        <a href="/" class="nav-link">← Hangars</a>
+        <a href="/hangar/{{ hangar_id }}" class="nav-link">{{ hangar_name }}</a>
+        <a href="/history/{{ hangar_id }}" class="nav-link">Historique</a>
+        <a href="/alerts/{{ hangar_id }}" class="nav-link active">Alertes</a>
+    </nav>
+    <div class="user-menu">
+        <span class="user-btn">{{ session.get('username') }}</span>
+        <div class="dropdown"><a href="/logout">Déconnexion</a></div>
+    </div>
+</header>
+
+<main>
+    <h1 class="page-title">Alertes — {{ hangar_name }}</h1>
+
+    {% if alerts %}
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>Date/Heure</th>
+                    <th>Capteur</th>
+                    <th>Message</th>
+                    <th>Niveau</th>
+                    <th>Statut</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for a in alerts %}
+                <tr>
+                    <td style="font-family:var(--mono);font-size:12px">{{ a.timestamp }}</td>
+                    <td><span class="node-name">{{ a.node_id }}</span></td>
+                    <td>{{ a.message }}</td>
+                    <td>
+                        <span class="alert-status-badge
+                            {% if a.level == 'critical' %}status-danger
+                            {% elif a.level == 'notify' %}status-warning
+                            {% else %}status-ok{% endif %}">
+                            {% if a.level == 'critical' %}🚨 Critique
+                            {% elif a.level == 'notify' %}🔔 Attention
+                            {% else %}✓ Normal{% endif %}
+                        </span>
+                    </td>
+                    <td>
+                        <span class="alert-status-badge
+                            {% if a.status == 'Traité' %}status-ok
+                            {% elif a.status == 'Non traité' and a.level == 'critical' %}status-danger
+                            {% else %}status-warning{% endif %}">
+                            {{ a.status }}
+                        </span>
+                    </td>
+                    <td>
+                        <form method="POST" action="/update_alert/{{ a.id }}" style="display:flex;gap:6px;align-items:center">
+                            <input type="hidden" name="hangar_id" value="{{ hangar_id }}">
+                            <select name="status" class="status-select">
+                                <option value="Non traité" {% if a.status == 'Non traité' %}selected{% endif %}>Non traité</option>
+                                <option value="En cours"   {% if a.status == 'En cours'   %}selected{% endif %}>En cours</option>
+                                <option value="Traité"     {% if a.status == 'Traité'     %}selected{% endif %}>Traité</option>
+                            </select>
+                            <button type="submit" class="btn-small">✓</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="no-data"><p>✅ Aucune alerte enregistrée.</p></div>
+    {% endif %}
+</main>
+</body>
+</html>
