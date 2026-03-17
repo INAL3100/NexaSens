@@ -1,32 +1,12 @@
-# ============================================================
-# NS-EDGE SIMULATOR — Nexa Sens  v3
-# Runs on PC — simulates real ESP32 NS-Edge devices
-#
-# DATA FLOW:
-#   simulator.py (PC) → server.py (Raspberry Pi) → cloud (Render)
-#
-# The simulator sends to the Pi just like a real ESP32 would.
-# The Pi then forwards to the cloud.
-# ============================================================
-
 import requests, time, random
 from datetime import datetime
-
 # ============================================================
 # CONFIGURATION
 # ============================================================
-
-# ── Change this to your Pi's IP address ──────────────────────
 PI_IP         = "192.168.43.181"
-SERVER_URL    = f"http://{PI_IP}:5000/receive"
-
-# ── If you want to test WITHOUT the Pi (direct to cloud) ─────
-# SERVER_URL  = "http://127.0.0.1:5000/receive"         # local PC
-# SERVER_URL  = "https://your-app.onrender.com/receive"  # Render
-
+SERVER_URL    = f"http://https://nexasens.onrender.com/receive"
 API_KEY       = "NEXASENS_SECRET_KEY"
-SEND_INTERVAL = 30  # seconds between each send cycle
-
+SEND_INTERVAL = 30 
 # ============================================================
 # EDGES TO SIMULATE
 # Add the PINs you registered in the dashboard.
@@ -34,15 +14,15 @@ SEND_INTERVAL = 30  # seconds between each send cycle
 # ============================================================
 
 EDGES = {
-    "ED01": {"temp": 33.0, "humidity": 65.0, "ammonia": 8.0},  # Hangar 1
-    "ED02": {"temp": 32.5, "humidity": 63.0, "ammonia": 7.5},  # Hangar 1
-    # "ED03": {"temp": 31.5, "humidity": 61.0, "ammonia": 9.0}, # Hangar 2
-    # "ED04": {"temp": 34.0, "humidity": 67.0, "ammonia": 8.5}, # Hangar 2
+    "ED01": {"temp": 33.0, "humidity": 65.0, "ammonia": 8.0},  
+    "ED02": {"temp": 32.5, "humidity": 63.0, "ammonia": 7.5},  
+     "ED03": {"temp": 31.5, "humidity": 61.0, "ammonia": 9.0}, 
+     "ED04": {"temp": 34.0, "humidity": 67.0, "ammonia": 8.5}, 
 }
 
 # ============================================================
 # SIMULATE READING
-# Averages 6 samples like a real ESP32 does
+# Averages 6 samples 
 # ============================================================
 
 def simulate_reading(base):
@@ -56,7 +36,7 @@ def simulate_reading(base):
     return temp, humidity, ammonia
 
 # ============================================================
-# SEND TO PI (or directly to cloud if Pi not available)
+# SEND TO PI 
 # ============================================================
 
 def send(pin, temp, humidity, ammonia):
