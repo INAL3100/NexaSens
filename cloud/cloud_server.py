@@ -1,24 +1,22 @@
-from flask import Flask, render_template, request, jsonify
-from datetime import datetime
+from flask import Flask, jsonify
 
 app = Flask(__name__)
 
-cloud_data = []
+# Simulated cloud data
+hangar_data = {
+    "hangars": [
+        {"id": 1, "name": "Hangar 1", "status": "ok"},
+        {"id": 2, "name": "Hangar 2", "status": "warning"}
+    ]
+}
 
-@app.route('/')
-def dashboard():
-    return render_template('hangars.html', hangars=cloud_data)
+@app.route("/api/hangars")
+def get_hangars():
+    return jsonify(hangar_data)
 
-@app.route('/receive', methods=['POST'])
-def receive():
-    data = request.json
-    data['timestamp'] = datetime.now().isoformat()
-    cloud_data.append(data)
-    return jsonify({"status": "received"})
+@app.route("/api/alerts")
+def get_alerts():
+    return jsonify({"alerts": []})
 
-@app.route('/get_data')
-def get_data():
-    return jsonify(cloud_data)
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8000, debug=True)
+if __name__ == "__main__":
+    app.run(port=5001)

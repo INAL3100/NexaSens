@@ -1,33 +1,18 @@
 :root {
-    --bg:#080d14; --bg-card:#0e1623; --bg-elevated:#131d2e;
-    --border:#1e2d42; --accent:#0ea5e9; --accent-glow:rgba(14,165,233,0.15);
-    --success:#10b981; --warning:#f59e0b; --danger:#ef4444;
-    --text:#e2e8f0; --text-muted:#64748b; --text-dim:#94a3b8;
-    --font:'DM Sans', sans-serif; --mono:'JetBrains Mono', monospace;
+    --bg: #080d14; --bg-card: #0e1623; --accent: #0ea5e9;
+    --text: #e2e8f0; --text-muted: #64748b;
 }
-*{box-sizing:border-box;margin:0;padding:0;}
-body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:100vh;}
-header{display:flex;align-items:center;justify-content:space-between;padding:0 24px;height:60px;background:var(--bg-card);border-bottom:1px solid var(--border);}
-.logo{font-size:18px;font-weight:700;color:var(--accent);}
-.main{padding:24px;max-width:1000px;margin:0 auto;}
-.hangars-list{display:flex;flex-direction:column;gap:14px;}
-.hangar-card{background:var(--bg-card);border:1px solid var(--border);border-radius:18px;padding:18px 20px;display:flex;flex-direction:column;gap:14px;transition:all 0.2s;cursor:pointer;}
-.hangar-card:hover{border-color:var(--accent);background:var(--bg-elevated);}
-.card-warning{border-color:rgba(245,158,11,0.4);}
-.card-critical{border-color:rgba(239,68,68,0.5);background:rgba(239,68,68,0.03);}
-.hcard-top{display:flex;align-items:center;justify-content:space-between;}
-.hcard-left{display:flex;align-items:center;gap:14px;}
-.hcard-icon{font-size:26px;}
-.hcard-name{font-size:16px;font-weight:600;}
-.hcard-sub{font-size:12px;color:var(--text-muted);}
-.hcard-right{display:flex;align-items:center;gap:10px;}
-.alert-badge{font-size:12px;padding:3px 10px;border-radius:20px;font-weight:600;}
-.badge-critical{background:rgba(239,68,68,0.12);color:var(--danger);border:1px solid rgba(239,68,68,0.3);}
-.mini-gauges{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:10px;}
-.mini-gauge{display:flex;flex-direction:column;align-items:center;}
-.mini-val{font-size:14px;font-weight:600;color:var(--text);}
-.gauge-thresh{font-size:10px;color:var(--text-muted);font-family:var(--mono);}
-.mini-equipment{display:flex;gap:8px;flex-wrap:wrap;}
-.mini-equip{font-size:11px;padding:3px 8px;border-radius:20px;border:1px solid var(--border);font-family:var(--mono);}
-.me-on{background:rgba(16,185,129,0.1);border-color:rgba(16,185,129,0.3);color:var(--success);}
-.me-off{background:var(--bg-card);color:var(--text-muted);}
+
+body { font-family: sans-serif; background: var(--bg); color: var(--text); margin:0; }
+header { display:flex; justify-content: space-between; padding:10px 20px; background: var(--bg-card); }
+.logo { font-weight:700; color: var(--accent); }
+main { padding:20px; max-width:900px; margin:auto; }
+.hangars-list { display:flex; flex-direction: column; gap:14px; }
+.hangar-card { background: var(--bg-card); border-radius:12px; padding:14px; }
+.hcard-top { display:flex; justify-content:space-between; }
+.hcard-left { display:flex; flex-direction:column; gap:4px; }
+.hcard-name { font-weight:600; }
+.btn-primary { background: var(--accent); color:white; padding:8px 14px; border:none; border-radius:8px; cursor:pointer; text-decoration:none; }
+.btn-small { background: var(--bg-card); color: var(--text-muted); padding:4px 8px; border-radius:6px; text-decoration:none; }
+.nsr-gadget { background: #131d2e; padding:10px; border-radius:8px; margin-top:8px; }
+.alert-banner { padding:10px; margin-bottom:12px; border-radius:8px; background: #ef44441a; color:#ef4444; }

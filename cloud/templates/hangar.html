@@ -1,52 +1,57 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-<title>Hangars Dashboard</title>
+    <meta charset="UTF-8">
+    <title>Hangars Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
 <header>
-    <div class="logo">NEXA SENS</div>
+    <div class="logo">NexaSens</div>
+    {% if admin %}
+        <a href="{{ url_for('logout') }}" class="btn-primary">Logout</a>
+    {% else %}
+        <form action="{{ url_for('login') }}" method="POST">
+            <input name="username" placeholder="User">
+            <input name="password" placeholder="Pass" type="password">
+            <button type="submit">Login</button>
+        </form>
+    {% endif %}
 </header>
+
 <main>
-    <h1 class="page-title">Hangars</h1>
+    {% for alert in alerts %}
+    <div class="alert-banner banner-critical">
+        {{ alert.message }} <span class="banner-time">{{ alert.time }}</span>
+    </div>
+    {% endfor %}
+
     <div class="hangars-list">
-        {% for hangar in hangars %}
-        <div class="hangar-card {% if hangar.status=='warning' %}card-warning{% elif hangar.status=='critical' %}card-critical{% endif %}">
+        {% for h in hangars %}
+        <div class="hangar-card">
             <div class="hcard-top">
                 <div class="hcard-left">
-                    <div class="hcard-icon">🏭</div>
-                    <div>
-                        <div class="hcard-name">{{ hangar.name }}</div>
-                        <div class="hcard-sub">{{ hangar.status | capitalize }}</div>
-                    </div>
+                    <div class="hcard-name">{{ h.name }}</div>
+                    <div class="hcard-sub">{{ h.status }}</div>
                 </div>
+                {% if admin %}
                 <div class="hcard-right">
-                    {% if hangar.alerts %}
-                        {% for alert in hangar.alerts %}
-                        <div class="alert-badge badge-critical">{{ alert }}</div>
-                        {% endfor %}
-                    {% endif %}
+                    <a href="{{ url_for('override', hangar_id=h.id) }}" class="btn-small">Override</a>
                 </div>
+                {% endif %}
             </div>
-            <div class="mini-gauges">
-                {% for key, val in hangar.sensors.items() %}
-                <div class="mini-gauge">
-                    <div class="mini-val">{{ val }}</div>
-                    <div class="gauge-thresh">{{ key }}</div>
-                </div>
-                {% endfor %}
-            </div>
-            <div class="mini-equipment">
-                {% for eq, state in hangar.equipment.items() %}
-                <div class="mini-equip {% if state %}me-on{% else %}me-off{% endif %}">{{ eq }}</div>
+            <div class="nsr-gadget">
+                {% for e in h.edges %}
+                <div>{{ e.name }}: {{ e.status }}</div>
                 {% endfor %}
             </div>
         </div>
         {% endfor %}
     </div>
+
+    {% if admin %}
+    <a href="{{ url_for('generate_pin') }}" class="btn-primary">Generate NSR PIN</a>
+    {% endif %}
 </main>
 </body>
 </html>
