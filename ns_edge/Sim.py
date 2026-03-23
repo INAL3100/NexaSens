@@ -1,73 +1,75 @@
 # ============================================================
-# NS-EDGE SIMULATOR — Nexa Sens  v3
-# Runs on PC — simulates real ESP32 NS-Edge devices
-#
-# DATA FLOW:
-#   simulator.py (PC) → server.py (Raspberry Pi) → cloud (Render)
-#
-# The simulator sends to the Pi just like a real ESP32 would.
-# The Pi then forwards to the cloud.
+# NS-EDGE SIMULATOR — Nexa Sens v4
+# Realistic simulation — temperature/humidity/ammonia follow
+# a wave pattern that crosses thresholds and comes back down
+# triggering the full alert cycle: Normal → Notify → Critical → Normal
 # ============================================================
 
-import requests, time, random
+import requests, time, math
 from datetime import datetime
 
-# ============================================================
-# CONFIGURATION
-# ============================================================
-
-# ── Change this to your Pi's IP address ──────────────────────
-PI_IP         = "192.168.43.181"
-# ── Uncomment the line you want to use ───────────────────────
-SERVER_URL    = "https://nexasens.onrender.com/receive"  # Render (active)
-# SERVER_URL  = f"http://{PI_IP}:5000/receive"           # Pi (when ready)
-# SERVER_URL  = "http://127.0.0.1:5000/receive"          # Local PC test
-
-# ── If you want to test WITHOUT the Pi (direct to cloud) ─────
-# SERVER_URL  = "http://127.0.0.1:5000/receive"         # local PC
-# SERVER_URL  = "https://your-app.onrender.com/receive"  # Render
+# ── SERVER TARGET ─────────────────────────────────────────────
+PI_IP      = "192.168.43.181"
+SERVER_URL = "https://nexasens.onrender.com/receive"   # Render
+# SERVER_URL = f"http://{PI_IP}:5000/receive"          # Pi (when ready)
+# SERVER_URL = "http://127.0.0.1:5000/receive"         # Local test
 
 API_KEY       = "NEXASENS_SECRET_KEY"
-SEND_INTERVAL = 30  # seconds between each send cycle
+SEND_INTERVAL = 30  # seconds between cycles
 
-# ============================================================
-# EDGES TO SIMULATE
-# Add the PINs you registered in the dashboard.
-# Each PIN is tied to a specific hangar in the cloud.
-# ============================================================
+# ── EDGES ─────────────────────────────────────────────────────
+# Only list PINs that are registered in the dashboard!
+# Each edge has a wave pattern centered around a base value
+# The wave amplitude makes it cross thresholds naturally
+#
+# wave_center : the middle value of the wave
+# wave_amp    : how far above/below center it goes
+# wave_period : how many cycles for one full wave (up and back)
+# noise       : small random variation per reading
 
 EDGES = {
-    "ED01": {"temp": 33.0, "humidity": 65.0, "ammonia": 8.0},  # Hangar 1
-    "ED02": {"temp": 32.5, "humidity": 63.0, "ammonia": 7.5},  # Hangar 1
-    # "ED03": {"temp": 31.5, "humidity": 61.0, "ammonia": 9.0}, # Hangar 2 (uncomment when registered)
-    # "ED04": {"temp": 34.0, "humidity": 67.0, "ammonia": 8.5}, # Hangar 2 (uncomment when registered)
+    "ED01": {
+        "temp":     {"center": 33.0, "amp": 4.0,  "period": 20, "noise": 0.3},
+        "humidity": {"center": 65.0, "amp": 6.0,  "period": 25, "noise": 1.0},
+        "ammonia":  {"center": 8.0,  "amp": 3.0,  "period": 30, "noise": 0.5},
+    },
+    "ED02": {
+        "temp":     {"center": 32.0, "amp": 4.5,  "period": 22, "noise": 0.3},
+        "humidity": {"center": 64.0, "amp": 7.0,  "period": 28, "noise": 1.0},
+        "ammonia":  {"center": 7.5,  "amp": 3.5,  "period": 35, "noise": 0.5},
+    },
+    # Uncomment when registered in dashboard:
+    # "ED03": {
+    #     "temp":     {"center": 27.0, "amp": 4.0,  "period": 18, "noise": 0.3},
+    #     "humidity": {"center": 60.0, "amp": 6.0,  "period": 22, "noise": 1.0},
+    #     "ammonia":  {"center": 12.0, "amp": 4.0,  "period": 25, "noise": 0.5},
+    # },
+    # "ED04": {
+    #     "temp":     {"center": 28.0, "amp": 3.5,  "period": 20, "noise": 0.3},
+    #     "humidity": {"center": 62.0, "amp": 5.0,  "period": 24, "noise": 1.0},
+    #     "ammonia":  {"center": 11.0, "amp": 3.0,  "period": 28, "noise": 0.5},
+    # },
 }
 
-# ============================================================
-# SIMULATE READING
-# Averages 6 samples like a real ESP32 does
-# ============================================================
+# ── WAVE GENERATOR ────────────────────────────────────────────
+import random
 
-def simulate_reading(base):
-    samples = [{"temp":     base["temp"]     + random.uniform(-1.5, 1.5),
-                "humidity": base["humidity"] + random.uniform(-3.0, 3.0),
-                "ammonia":  base["ammonia"]  + random.uniform(-2.0, 2.0)}
-               for _ in range(6)]
-    temp     = round(sum(s["temp"]     for s in samples) / 6, 2)
-    humidity = round(max(0, min(100, sum(s["humidity"] for s in samples) / 6)), 2)
-    ammonia  = round(max(0, sum(s["ammonia"]  for s in samples) / 6), 2)
-    return temp, humidity, ammonia
+cycle = 0  # global cycle counter
 
-# ============================================================
-# SEND TO PI (or directly to cloud if Pi not available)
-# ============================================================
+def wave_value(w, cycle):
+    """Generate a realistic value using a sine wave + noise"""
+    sine    = math.sin(2 * math.pi * cycle / w["period"])
+    noise   = random.uniform(-w["noise"], w["noise"])
+    value   = w["center"] + (w["amp"] * sine) + noise
+    return round(value, 2)
 
+# ── SEND ──────────────────────────────────────────────────────
 def send(pin, temp, humidity, ammonia):
     payload = {"pin": pin, "temperature": temp,
                "humidity": humidity, "ammonia": ammonia}
     try:
         r = requests.post(SERVER_URL, json=payload,
-                          headers={"X-API-KEY": API_KEY}, timeout=5)
+                          headers={"X-API-KEY": API_KEY}, timeout=8)
         if r.status_code == 200:
             resp = r.json()
             print(f"  ✓ {pin} → Hangar {resp.get('hangar_id','?')} "
@@ -82,12 +84,9 @@ def send(pin, temp, humidity, ammonia):
     except Exception as e:
         print(f"  ✗ {pin} → Connexion échouée: {e}")
 
-# ============================================================
-# MAIN LOOP
-# ============================================================
-
+# ── MAIN LOOP ─────────────────────────────────────────────────
 print("=" * 58)
-print("  NS-Edge Simulator — Nexa Sens  v3")
+print("  NS-Edge Simulator — Nexa Sens v4 (realistic)")
 print(f"  Cible   : {SERVER_URL}")
 print(f"  Edges   : {len(EDGES)}")
 for pin in EDGES:
@@ -100,10 +99,13 @@ print()
 
 while True:
     ts = datetime.now().strftime('%H:%M:%S')
-    print(f"[{ts}] Envoi ({len(EDGES)} edge(s))...")
-    for pin, base in EDGES.items():
-        temp, humidity, ammonia = simulate_reading(base)
+    print(f"[{ts}] Cycle {cycle} — Envoi ({len(EDGES)} edge(s))...")
+    for pin, waves in EDGES.items():
+        temp     = wave_value(waves["temp"],     cycle)
+        humidity = round(max(0, min(100, wave_value(waves["humidity"], cycle))), 2)
+        ammonia  = round(max(0, wave_value(waves["ammonia"],  cycle)), 2)
         send(pin, temp, humidity, ammonia)
         time.sleep(0.5)
     print(f"  ⏳ Prochain envoi dans {SEND_INTERVAL}s\n")
+    cycle += 1
     time.sleep(SEND_INTERVAL)
