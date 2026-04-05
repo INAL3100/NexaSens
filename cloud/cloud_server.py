@@ -9,6 +9,13 @@
 #   - Monitor Pi heartbeat (alert if Pi goes down)
 #   - Send Twilio SMS ONLY if Pi is completely dead
 #   - NO equipment decisions (Pi handles all of that)
+#
+# BUGS FIXED:
+#   1. add_hangar() now sets nsr_pin correctly
+#   2. NSR pin assignment per hangar with 3-hangar limit
+#   3. notify deduplication uses condition type not exact message
+#   4. sms_override now updates only correct hangar
+#   5. push_config_to_pi logs warning if Pi URL unknown
 # ============================================================
 
 from flask import Flask, request, jsonify, render_template, redirect, session
@@ -92,6 +99,7 @@ def init_db():
     conn.execute("""CREATE TABLE IF NOT EXISTS alerts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         hangar_id INTEGER, node_id TEXT, message TEXT,
+        alert_type TEXT DEFAULT 'general',
         level TEXT DEFAULT 'log',
         status TEXT DEFAULT 'Non traité', timestamp TEXT)""")
     conn.execute("""CREATE TABLE IF NOT EXISTS nsr_heartbeat (
@@ -99,6 +107,8 @@ def init_db():
         last_seen TEXT,
         pi_url TEXT DEFAULT NULL)""")
     conn.commit()
+
+    # seed default users and pins
     conn.execute("INSERT OR IGNORE INTO users VALUES (NULL,'admin',?,'','admin',1)",
                  (generate_password_hash("admin1234"),))
     for pin, pt in [("NSR1","nsr_box"),("NSR2","nsr_box"),("NSR3","nsr_box"),
@@ -131,12 +141,26 @@ def get_phone(hangar_id):
                 (hangar_id,), one=True)
     return row[0] if row else None
 
+def get_alert_level(temp, hum, nh3, t):
+    if (nh3  >= t["ammonia_max"]+2 or temp >= t["temp_max"]+2 or
+        temp <= t["temp_min"]-2  or hum  >= t["hum_max"]+4  or
+        hum  <= t["hum_min"]-4):
+        return "critical"
+    if (nh3  >= t["ammonia_max"] or temp >= t["temp_max"] or
+        temp <= t["temp_min"]   or hum  >= t["hum_max"]  or
+        hum  <= t["hum_min"]):
+        return "notify"
+    return "log"
+
 # ── PUSH CONFIG TO PI ─────────────────────────────────────────
 def push_config_to_pi(nsr_pin):
     """Push updated config to Pi immediately when farmer changes something"""
     row = query("SELECT pi_url FROM nsr_heartbeat WHERE pin=?", (nsr_pin,), one=True)
     if not row or not row[0]:
-        return  # Pi URL unknown — Pi will pull on next startup
+        # BUG 10 FIX: log warning instead of silently dropping
+        print(f"[PUSH] WARNING — Pi URL unknown for {nsr_pin}. "
+              f"Pi will pull config on next startup.")
+        return
     pi_url = row[0]
     try:
         config = build_nsr_config(nsr_pin)
@@ -144,7 +168,7 @@ def push_config_to_pi(nsr_pin):
                   json=config,
                   headers={"X-API-KEY": API_KEY},
                   timeout=5)
-        print(f"[PUSH] Config pushed to Pi {nsr_pin}")
+        print(f"[PUSH] Config pushed to Pi {nsr_pin} at {pi_url}")
     except Exception as e:
         print(f"[PUSH] Failed to push to Pi {nsr_pin}: {e}")
 
@@ -156,7 +180,8 @@ def build_nsr_config(nsr_pin):
     for r in rows:
         hid  = r[0]
         pins = [p[0] for p in query(
-            "SELECT pin FROM nodes WHERE hangar_id=? AND active=1 AND node_type='ns_edge'", (hid,))]
+            "SELECT pin FROM nodes WHERE hangar_id=? AND active=1 AND node_type='ns_edge'",
+            (hid,))]
         hangars[str(hid)] = {
             "thresholds": {"temp_min":r[1],"temp_max":r[2],"hum_min":r[3],
                            "hum_max":r[4],"ammonia_max":r[5]},
@@ -167,7 +192,6 @@ def build_nsr_config(nsr_pin):
     return {"hangars": hangars}
 
 # ── PI WATCHDOG ───────────────────────────────────────────────
-# Monitors Pi heartbeat — alerts if Pi goes silent for 5 minutes
 def pi_watchdog():
     while True:
         time.sleep(60)
@@ -178,29 +202,26 @@ def pi_watchdog():
             rows   = query("SELECT pin, last_seen FROM nsr_heartbeat")
             for nsr_pin, last_seen in rows:
                 if last_seen and last_seen < cutoff:
-                    # Check if alert already exists
                     existing = query("""SELECT id FROM alerts
-                        WHERE node_id=? AND message LIKE '%NSR-BOX%hors ligne%'
+                        WHERE node_id=? AND alert_type='pi_offline'
                         AND status='Non traité'""", (nsr_pin,), one=True)
                     if not existing:
                         msg = f"NSR-BOX hors ligne: {nsr_pin} — aucune donnée depuis 5 minutes"
-                        # Insert alert for all hangars of this NSR
                         for (hid,) in query("SELECT id FROM hangars WHERE nsr_pin=?", (nsr_pin,)):
                             execute("""INSERT INTO alerts
-                                (hangar_id,node_id,message,level,status,timestamp)
-                                VALUES (?,?,?,'critical','Non traité',?)""",
+                                (hangar_id,node_id,message,alert_type,level,status,timestamp)
+                                VALUES (?,?,?,'pi_offline','critical','Non traité',?)""",
                                 (hid, nsr_pin, msg, ts))
-                        # Send Twilio SMS — Pi is dead, only way to alert farmer
                         for (hid,) in query("SELECT id FROM hangars WHERE nsr_pin=?", (nsr_pin,)):
                             phone = get_phone(hid)
                             if phone:
                                 send_twilio_sms(phone, f"🚨 Nexa Sens — {msg}")
                                 break
                 else:
-                    # Pi is back — auto-resolve its down alerts
+                    # Pi back online — resolve its down alerts
                     for (hid,) in query("SELECT id FROM hangars WHERE nsr_pin=?", (nsr_pin,)):
                         execute("""UPDATE alerts SET status='Traité'
-                            WHERE hangar_id=? AND node_id=? AND message LIKE '%NSR-BOX%hors ligne%'
+                            WHERE hangar_id=? AND node_id=? AND alert_type='pi_offline'
                             AND status='Non traité'""", (hid, nsr_pin))
         except Exception as e:
             print(f"[PI WATCHDOG] {e}")
@@ -235,7 +256,8 @@ def register():
         password = request.form["password"]
         phone    = request.form["phone"]
         pin      = request.form["pin"].upper().strip()
-        pin_row  = query("SELECT id,used FROM pins WHERE pin=? AND pin_type='nsr_box'", (pin,), one=True)
+        pin_row  = query("SELECT id,used FROM pins WHERE pin=? AND pin_type='nsr_box'",
+                         (pin,), one=True)
         if not pin_row: return render_template("register.html", error="PIN NSR-BOX invalide.")
         if pin_row[1]:  return render_template("register.html", error="PIN déjà utilisé.")
         try:
@@ -244,10 +266,12 @@ def register():
             uid = cur.lastrowid
             execute("UPDATE pins SET used=1,used_by=? WHERE id=?", (uid, pin_row[0]))
             t    = THRESHOLDS[1]
+            # First hangar always gets the NSR pin assigned
             cur2 = execute("""INSERT INTO hangars
                 (user_id,name,flock_age,temp_min,temp_max,hum_min,hum_max,ammonia_max,nsr_pin)
                 VALUES (?,?,1,?,?,?,?,?,?)""",
-                (uid,"Hangar 1",t["temp_min"],t["temp_max"],t["hum_min"],t["hum_max"],t["ammonia_max"],pin))
+                (uid,"Hangar 1",t["temp_min"],t["temp_max"],
+                 t["hum_min"],t["hum_max"],t["ammonia_max"],pin))
             execute("INSERT INTO nodes (user_id,hangar_id,node_id,pin,node_type) VALUES (?,?,?,?,'nsr_box')",
                     (uid, cur2.lastrowid, "NSR-BOX", pin))
             return redirect("/login")
@@ -264,40 +288,37 @@ def dashboard():
     if "user_id" not in session: return redirect("/login")
     if session["role"] == "admin": return redirect("/admin")
     uid        = session["user_id"]
-    master_row = query("SELECT nsr_pin FROM hangars WHERE user_id=? AND nsr_pin IS NOT NULL LIMIT 1", (uid,), one=True)
+    master_row = query("SELECT nsr_pin FROM hangars WHERE user_id=? AND nsr_pin IS NOT NULL LIMIT 1",
+                       (uid,), one=True)
     master_pin = master_row[0] if master_row else None
     hangars    = []
-    for hid, name, age, nsr_pin in query("SELECT id,name,flock_age,nsr_pin FROM hangars WHERE user_id=?", (uid,)):
-        t, avg, vals = get_thresh(hid), None, []
-        for (nid,) in query("SELECT node_id FROM nodes WHERE hangar_id=? AND active=1 AND node_type='ns_edge'", (hid,)):
-            row = query("SELECT temperature,humidity,ammonia,fan,heater,mister,ventilation FROM readings WHERE node_id=? AND hangar_id=? ORDER BY id DESC LIMIT 1", (nid, hid), one=True)
+    for hid, name, age, nsr_pin in query(
+            "SELECT id,name,flock_age,nsr_pin FROM hangars WHERE user_id=?", (uid,)):
+        t, vals = get_thresh(hid), []
+        for (nid,) in query(
+                "SELECT node_id FROM nodes WHERE hangar_id=? AND active=1 AND node_type='ns_edge'",
+                (hid,)):
+            row = query("""SELECT temperature,humidity,ammonia,fan,heater,mister,ventilation
+                FROM readings WHERE node_id=? AND hangar_id=? ORDER BY id DESC LIMIT 1""",
+                (nid, hid), one=True)
             if row: vals.append(row)
+        avg = None
         if vals:
             at = round(sum(v[0] for v in vals)/len(vals),1)
             ah = round(sum(v[1] for v in vals)/len(vals),1)
             an = round(sum(v[2] for v in vals)/len(vals),1)
-            # Use equipment state from last reading (Pi decided)
-            fan    = vals[-1][3]
-            heater = vals[-1][4]
-            mister = vals[-1][5]
-            ventil = vals[-1][6]
-            # Alert level based on values vs thresholds
             al = get_alert_level(at, ah, an, t)
             avg = {"temperature":at,"humidity":ah,"ammonia":an,
-                   "fan":fan,"heater":heater,"mister":mister,"ventilation":ventil,
+                   "fan":vals[-1][3],"heater":vals[-1][4],
+                   "mister":vals[-1][5],"ventilation":vals[-1][6],
                    "alert_level":al}
-        alert_count = query("SELECT COUNT(*) FROM alerts WHERE hangar_id=? AND level='critical' AND status='Non traité'", (hid,), one=True)[0]
+        alert_count = query("""SELECT COUNT(*) FROM alerts
+            WHERE hangar_id=? AND level='critical' AND status='Non traité'""",
+            (hid,), one=True)[0]
         hangars.append({"id":hid,"name":name,"flock_age":age,
                         "nsr_pin":nsr_pin or master_pin,
                         "thresholds":t,"avg":avg,"alert_count":alert_count})
     return render_template("dashboard.html", hangars=hangars, username=session["username"])
-
-def get_alert_level(temp, hum, nh3, t):
-    if nh3>=t["ammonia_max"]+2 or temp>=t["temp_max"]+2 or temp<=t["temp_min"]-2 or hum>=t["hum_max"]+4 or hum<=t["hum_min"]-4:
-        return "critical"
-    if nh3>=t["ammonia_max"] or temp>=t["temp_max"] or temp<=t["temp_min"] or hum>=t["hum_max"] or hum<=t["hum_min"]:
-        return "notify"
-    return "log"
 
 # ═══════════════════════════════════════════════════════════════
 # HANGAR PAGE
@@ -307,9 +328,12 @@ def get_alert_level(temp, hum, nh3, t):
 def hangar_page(hid):
     if "user_id" not in session: return redirect("/login")
     if session["role"] != "admin":
-        if not query("SELECT id FROM hangars WHERE id=? AND user_id=?", (hid, session["user_id"]), one=True):
+        if not query("SELECT id FROM hangars WHERE id=? AND user_id=?",
+                     (hid, session["user_id"]), one=True):
             return "Accès refusé", 403
-    h = query("SELECT name,flock_age,temp_min,temp_max,hum_min,hum_max,ammonia_max,nsr_pin,eq_fan,eq_heater,eq_mister,eq_ventilation FROM hangars WHERE id=?", (hid,), one=True)
+    h = query("""SELECT name,flock_age,temp_min,temp_max,hum_min,hum_max,
+                 ammonia_max,nsr_pin,eq_fan,eq_heater,eq_mister,eq_ventilation
+                 FROM hangars WHERE id=?""", (hid,), one=True)
     if not h: return "Hangar introuvable", 404
     t      = get_thresh(hid)
     hangar = {"id":hid,"name":h[0],"flock_age":h[1],"temp_min":h[2],"temp_max":h[3],
@@ -317,10 +341,14 @@ def hangar_page(hid):
               "eq_fan":h[8],"eq_heater":h[9],"eq_mister":h[10],"eq_ventilation":h[11],"eff":t}
     cutoff = (datetime.now()-timedelta(seconds=90)).strftime("%Y-%m-%d %H:%M:%S")
     nodes  = {}
-    for node_id, last_seen, pin in query("SELECT node_id,last_seen,pin FROM nodes WHERE hangar_id=? AND active=1 AND node_type='ns_edge'", (hid,)):
+    for node_id, last_seen, pin in query(
+            "SELECT node_id,last_seen,pin FROM nodes WHERE hangar_id=? AND active=1 AND node_type='ns_edge'",
+            (hid,)):
         offline = not last_seen or last_seen < cutoff
-        row     = query("SELECT temperature,humidity,ammonia,timestamp FROM readings WHERE node_id=? AND hangar_id=? ORDER BY id DESC LIMIT 1", (node_id, hid), one=True)
-        al      = "log"
+        row     = query("""SELECT temperature,humidity,ammonia,timestamp
+            FROM readings WHERE node_id=? AND hangar_id=? ORDER BY id DESC LIMIT 1""",
+            (node_id, hid), one=True)
+        al = "log"
         if row and not offline:
             al = get_alert_level(row[0], row[1], row[2], t)
         nodes[node_id] = {"pin":pin,
@@ -330,21 +358,26 @@ def hangar_page(hid):
                           "timestamp":row[3] if row else None,
                           "alert_level":"critical" if offline else al,
                           "offline":offline}
-    avg, active = None, [n for n in nodes.values() if not n["offline"] and n["temperature"] is not None]
+    avg, active = None, [n for n in nodes.values()
+                         if not n["offline"] and n["temperature"] is not None]
     if active:
         at = round(sum(n["temperature"] for n in active)/len(active),1)
         ah = round(sum(n["humidity"]    for n in active)/len(active),1)
         an = round(sum(n["ammonia"]     for n in active)/len(active),1)
-        pr = query("SELECT fan,heater,mister,ventilation FROM readings WHERE hangar_id=? ORDER BY id DESC LIMIT 1", (hid,), one=True)
+        pr = query("""SELECT fan,heater,mister,ventilation
+            FROM readings WHERE hangar_id=? ORDER BY id DESC LIMIT 1""", (hid,), one=True)
         avg = {"temperature":at,"humidity":ah,"ammonia":an,
                "fan":pr[0] if pr else "OFF","heater":pr[1] if pr else "OFF",
                "mister":pr[2] if pr else "OFF","ventilation":pr[3] if pr else "OFF",
                "alert_level":get_alert_level(at,ah,an,t)}
-    active_alerts = query("SELECT id,node_id,message,level,status,timestamp FROM alerts WHERE hangar_id=? AND status!='Traité' AND level!='log' ORDER BY id DESC LIMIT 5", (hid,))
-    owner         = query("SELECT user_id FROM hangars WHERE id=?", (hid,), one=True)
+    active_alerts = query("""SELECT id,node_id,message,level,status,timestamp
+        FROM alerts WHERE hangar_id=? AND status!='Traité' AND level!='log'
+        ORDER BY id DESC LIMIT 5""", (hid,))
+    owner = query("SELECT user_id FROM hangars WHERE id=?", (hid,), one=True)
     return render_template("hangar.html", hangar=hangar, nodes=nodes, avg=avg,
                            active_alerts=active_alerts, username=session["username"],
-                           error=request.args.get("error",""), is_admin=session["role"]=="admin",
+                           error=request.args.get("error",""),
+                           is_admin=session["role"]=="admin",
                            owner_id=owner[0] if owner else None, thresholds=t)
 
 # ═══════════════════════════════════════════════════════════════
@@ -360,7 +393,6 @@ def set_threshold(hid):
         return jsonify({"error":"champ invalide"}), 400
     try:
         execute(f"UPDATE hangars SET {field}=? WHERE id=?", (float(data.get("value")), hid))
-        # Push to Pi immediately
         nsr = query("SELECT nsr_pin FROM hangars WHERE id=?", (hid,), one=True)
         if nsr and nsr[0]: push_config_to_pi(nsr[0])
         return jsonify({"ok":True, "thresholds":get_thresh(hid)})
@@ -370,9 +402,11 @@ def set_threshold(hid):
 @app.route("/remove_node/<int:hid>/<node_id>", methods=["POST"])
 def remove_node(hid, node_id):
     if "user_id" not in session: return redirect("/login")
-    row = query("SELECT pin FROM nodes WHERE hangar_id=? AND node_id=? AND node_type='ns_edge'", (hid, node_id), one=True)
+    row = query("SELECT pin FROM nodes WHERE hangar_id=? AND node_id=? AND node_type='ns_edge'",
+                (hid, node_id), one=True)
     if row: execute("UPDATE pins SET used=0,used_by=NULL WHERE pin=?", (row[0],))
-    execute("DELETE FROM nodes WHERE hangar_id=? AND node_id=? AND node_type='ns_edge'", (hid, node_id))
+    execute("DELETE FROM nodes WHERE hangar_id=? AND node_id=? AND node_type='ns_edge'",
+            (hid, node_id))
     nsr = query("SELECT nsr_pin FROM hangars WHERE id=?", (hid,), one=True)
     if nsr and nsr[0]: push_config_to_pi(nsr[0])
     return redirect(f"/hangar/{hid}")
@@ -384,22 +418,66 @@ def add_hangar():
     count = query("SELECT COUNT(*) FROM hangars WHERE user_id=?", (uid,), one=True)[0]
     if count >= 3: return redirect("/")
     t = THRESHOLDS[1]
-    execute("INSERT INTO hangars (user_id,name,flock_age,temp_min,temp_max,hum_min,hum_max,ammonia_max) VALUES (?,?,1,?,?,?,?,?)",
-            (uid, f"Hangar {count+1}", t["temp_min"],t["temp_max"],t["hum_min"],t["hum_max"],t["ammonia_max"]))
+    # BUG 1 FIX: new hangar starts with nsr_pin=NULL
+    # farmer must assign NSR from the hangar page
+    execute("""INSERT INTO hangars
+        (user_id,name,flock_age,temp_min,temp_max,hum_min,hum_max,ammonia_max,nsr_pin)
+        VALUES (?,?,1,?,?,?,?,?,NULL)""",
+        (uid, f"Hangar {count+1}", t["temp_min"],t["temp_max"],
+         t["hum_min"],t["hum_max"],t["ammonia_max"]))
     return redirect("/")
+
+# BUG 2 & 3 FIX: assign NSR pin to a hangar with 3-hangar limit enforcement
+@app.route("/assign_nsr/<int:hid>", methods=["POST"])
+def assign_nsr(hid):
+    if "user_id" not in session: return redirect("/login")
+    nsr_pin = request.form.get("nsr_pin","").upper().strip()
+
+    # Check PIN exists and is an NSR-BOX type
+    pin_row = query("SELECT id,used FROM pins WHERE pin=? AND pin_type='nsr_box'",
+                    (nsr_pin,), one=True)
+    if not pin_row:
+        return redirect(f"/hangar/{hid}?error=PIN+NSR-BOX+invalide")
+
+    # BUG 3 FIX: Check how many hangars already use this NSR
+    nsr_hangar_count = query(
+        "SELECT COUNT(*) FROM hangars WHERE nsr_pin=?", (nsr_pin,), one=True)[0]
+
+    # Check if this hangar already uses this NSR (don't count it twice)
+    current_nsr = query("SELECT nsr_pin FROM hangars WHERE id=?", (hid,), one=True)
+    already_assigned = current_nsr and current_nsr[0] == nsr_pin
+
+    if not already_assigned and nsr_hangar_count >= 3:
+        return redirect(f"/hangar/{hid}?error=Ce+NSR+contrôle+déjà+3+hangars+(maximum)")
+
+    # Assign NSR to this hangar
+    execute("UPDATE hangars SET nsr_pin=? WHERE id=?", (nsr_pin, hid))
+
+    # Mark PIN as used if not already
+    if not pin_row[1]:
+        execute("UPDATE pins SET used=1,used_by=? WHERE id=?",
+                (session["user_id"], pin_row[0]))
+
+    # Push config to this Pi
+    push_config_to_pi(nsr_pin)
+    return redirect(f"/hangar/{hid}")
 
 @app.route("/add_node/<int:hid>", methods=["POST"])
 def add_node(hid):
     if "user_id" not in session: return redirect("/login")
     pin     = request.form.get("pin","").upper().strip()
-    pin_row = query("SELECT id,used FROM pins WHERE pin=? AND pin_type='ns_edge'", (pin,), one=True)
+    pin_row = query("SELECT id,used FROM pins WHERE pin=? AND pin_type='ns_edge'",
+                    (pin,), one=True)
     if not pin_row: return redirect(f"/hangar/{hid}?error=PIN+invalide")
     if pin_row[1]:  return redirect(f"/hangar/{hid}?error=PIN+déjà+utilisé")
-    count = query("SELECT COUNT(*) FROM nodes WHERE hangar_id=? AND active=1 AND node_type='ns_edge'", (hid,), one=True)[0]
+    count = query("""SELECT COUNT(*) FROM nodes
+        WHERE hangar_id=? AND active=1 AND node_type='ns_edge'""",
+        (hid,), one=True)[0]
     if count >= 10: return redirect(f"/hangar/{hid}?error=Maximum+10+capteurs")
     execute("INSERT INTO nodes (user_id,hangar_id,node_id,pin,node_type) VALUES (?,?,?,?,'ns_edge')",
             (session["user_id"], hid, f"NS-EDGE-{count+1}", pin))
-    execute("UPDATE pins SET used=1,used_by=? WHERE id=?", (session["user_id"], pin_row[0]))
+    execute("UPDATE pins SET used=1,used_by=? WHERE id=?",
+            (session["user_id"], pin_row[0]))
     nsr = query("SELECT nsr_pin FROM hangars WHERE id=?", (hid,), one=True)
     if nsr and nsr[0]: push_config_to_pi(nsr[0])
     return redirect(f"/hangar/{hid}")
@@ -409,8 +487,10 @@ def update_age(hid):
     if "user_id" not in session: return redirect("/login")
     age = max(1, min(int(request.form.get("flock_age",1)), 10))
     t   = THRESHOLDS[min(age,5)]
-    execute("UPDATE hangars SET flock_age=?,temp_min=?,temp_max=?,hum_min=?,hum_max=?,ammonia_max=? WHERE id=?",
-            (age, t["temp_min"],t["temp_max"],t["hum_min"],t["hum_max"],t["ammonia_max"], hid))
+    execute("""UPDATE hangars SET flock_age=?,temp_min=?,temp_max=?,
+               hum_min=?,hum_max=?,ammonia_max=? WHERE id=?""",
+            (age, t["temp_min"],t["temp_max"],
+             t["hum_min"],t["hum_max"],t["ammonia_max"], hid))
     nsr = query("SELECT nsr_pin FROM hangars WHERE id=?", (hid,), one=True)
     if nsr and nsr[0]: push_config_to_pi(nsr[0])
     return redirect(f"/hangar/{hid}")
@@ -418,8 +498,10 @@ def update_age(hid):
 @app.route("/control/<int:hid>/<equipment>/<action>", methods=["POST"])
 def control(hid, equipment, action):
     if "user_id" not in session: return redirect("/login")
-    if equipment not in ["eq_fan","eq_heater","eq_mister","eq_ventilation"]: return redirect(f"/hangar/{hid}")
-    if action not in ["ON","OFF","AUTO"]: return redirect(f"/hangar/{hid}")
+    if equipment not in ["eq_fan","eq_heater","eq_mister","eq_ventilation"]:
+        return redirect(f"/hangar/{hid}")
+    if action not in ["ON","OFF","AUTO"]:
+        return redirect(f"/hangar/{hid}")
     execute(f"UPDATE hangars SET {equipment}=? WHERE id=?", (action, hid))
     nsr = query("SELECT nsr_pin FROM hangars WHERE id=?", (hid,), one=True)
     if nsr and nsr[0]: push_config_to_pi(nsr[0])
@@ -461,38 +543,68 @@ def receive():
     msg    = data.get("alert", "Normal")
 
     execute("""INSERT INTO readings
-        (hangar_id,node_id,temperature,humidity,ammonia,fan,heater,mister,ventilation,alert_level,alert,timestamp)
+        (hangar_id,node_id,temperature,humidity,ammonia,
+         fan,heater,mister,ventilation,alert_level,alert,timestamp)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (hid,node_id,temp,humidity,ammonia,fan,heater,mister,ventil,level,msg,ts))
+        (hid,node_id,temp,humidity,ammonia,
+         fan,heater,mister,ventil,level,msg,ts))
+
+    # BUG 6 FIX: deduplicate by alert_type (condition) not exact message text
+    # Derive alert_type from the level and what's abnormal
+    alert_type = _derive_alert_type(temp, humidity, ammonia, get_thresh(hid), level)
 
     if level == "notify":
-        if not query("SELECT id FROM alerts WHERE hangar_id=? AND node_id=? AND level='notify' AND status='En cours' AND message=?",
-                     (hid, node_id, msg), one=True):
-            execute("INSERT INTO alerts (hangar_id,node_id,message,level,status,timestamp) VALUES (?,?,?,'notify','En cours',?)",
-                    (hid, node_id, msg, ts))
+        # Only create new notify if no active one of same type exists for this node
+        if not query("""SELECT id FROM alerts
+                WHERE hangar_id=? AND node_id=? AND level='notify'
+                AND alert_type=? AND status='En cours'""",
+                (hid, node_id, alert_type), one=True):
+            execute("""INSERT INTO alerts
+                (hangar_id,node_id,message,alert_type,level,status,timestamp)
+                VALUES (?,?,?,?,'notify','En cours',?)""",
+                (hid, node_id, msg, alert_type, ts))
+
     elif level == "critical":
-        execute("INSERT INTO alerts (hangar_id,node_id,message,level,status,timestamp) VALUES (?,?,?,'critical','Non traité',?)",
-                (hid, node_id, msg, ts))
-        execute("UPDATE alerts SET status='Non traité' WHERE hangar_id=? AND node_id=? AND level='notify' AND status='En cours'",
-                (hid, node_id))
+        execute("""INSERT INTO alerts
+            (hangar_id,node_id,message,alert_type,level,status,timestamp)
+            VALUES (?,?,?,?,'critical','Non traité',?)""",
+            (hid, node_id, msg, alert_type, ts))
+        # Escalate any active notify of same type to non-treated
+        execute("""UPDATE alerts SET status='Non traité'
+            WHERE hangar_id=? AND node_id=? AND alert_type=?
+            AND level='notify' AND status='En cours'""",
+            (hid, node_id, alert_type))
+
     elif level == "log":
-        execute("UPDATE alerts SET status='Traité' WHERE hangar_id=? AND node_id=? AND level='notify' AND status='En cours'",
-                (hid, node_id))
+        # Resolve any active notify alerts for this node (back to normal)
+        execute("""UPDATE alerts SET status='Traité'
+            WHERE hangar_id=? AND node_id=? AND level='notify'
+            AND status='En cours'""", (hid, node_id))
 
     return jsonify({"ok":True,"node_id":node_id,"hangar_id":hid}), 200
 
+def _derive_alert_type(temp, hum, nh3, t, level):
+    """Derive a stable alert type key from what condition is abnormal"""
+    if level == "log": return "normal"
+    if nh3  >= t["ammonia_max"]-2: return "ammonia"
+    if temp >= t["temp_max"]:      return "temp_high"
+    if temp <= t["temp_min"]:      return "temp_low"
+    if hum  >= t["hum_max"]-2:    return "hum_high"
+    if hum  <= t["hum_min"]:      return "hum_low"
+    return "general"
+
 # ═══════════════════════════════════════════════════════════════
-# PI HEARTBEAT — Pi calls this every 60s to say "I'm alive"
+# PI HEARTBEAT
 # ═══════════════════════════════════════════════════════════════
 
 @app.route("/heartbeat", methods=["POST"])
 def heartbeat():
     if request.headers.get("X-API-KEY") != API_KEY:
         return jsonify({"error":"Unauthorized"}), 401
-    data    = request.get_json()
-    pin     = data.get("pin","").upper()
-    pi_url  = data.get("url","")  # Pi's local IP so cloud can push config
-    ts      = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    data   = request.get_json()
+    pin    = data.get("pin","").upper()
+    pi_url = data.get("url","")
+    ts     = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     execute("INSERT OR REPLACE INTO nsr_heartbeat (pin,last_seen,pi_url) VALUES (?,?,?)",
             (pin, ts, pi_url))
     return jsonify({"ok":True}), 200
@@ -509,6 +621,7 @@ def nsr_config(nsr_pin):
 
 # ═══════════════════════════════════════════════════════════════
 # SMS OVERRIDE — Pi tells cloud when farmer sent SMS command
+# BUG 4 FIX: update only the specific hangar, not all hangars of NSR
 # ═══════════════════════════════════════════════════════════════
 
 @app.route("/sms_override", methods=["POST"])
@@ -516,14 +629,20 @@ def sms_override():
     if request.headers.get("X-API-KEY") != API_KEY:
         return jsonify({"error":"Unauthorized"}), 401
     data      = request.get_json()
-    nsr_pin   = data.get("pin","").upper()
+    hangar_id = data.get("hangar_id")   # Pi now sends specific hangar_id
     equipment = data.get("equipment")
     action    = data.get("action")
     if equipment not in ["eq_fan","eq_heater","eq_mister","eq_ventilation"]:
         return jsonify({"error":"invalid equipment"}), 400
     if action not in ["ON","OFF","AUTO"]:
         return jsonify({"error":"invalid action"}), 400
-    execute(f"UPDATE hangars SET {equipment}=? WHERE nsr_pin=?", (action, nsr_pin))
+    if hangar_id:
+        # Update specific hangar
+        execute(f"UPDATE hangars SET {equipment}=? WHERE id=?", (action, hangar_id))
+    else:
+        # Fallback: RESET command — update all hangars of this NSR
+        nsr_pin = data.get("nsr_pin","").upper()
+        execute(f"UPDATE hangars SET {equipment}=? WHERE nsr_pin=?", (action, nsr_pin))
     return jsonify({"ok":True}), 200
 
 # ═══════════════════════════════════════════════════════════════
@@ -535,7 +654,8 @@ def history(hid):
     if "user_id" not in session: return redirect("/login")
     date      = request.args.get("date") or datetime.now().strftime("%Y-%m-%d")
     node      = request.args.get("node","")
-    node_rows = query("SELECT node_id,pin FROM nodes WHERE hangar_id=? AND active=1 AND node_type='ns_edge'", (hid,))
+    node_rows = query("""SELECT node_id,pin FROM nodes
+        WHERE hangar_id=? AND active=1 AND node_type='ns_edge'""", (hid,))
     node_ids  = [r[0] for r in node_rows]
     node_pins = {r[0]:r[1] for r in node_rows}
     if not node and node_ids: node = node_ids[0]
@@ -548,21 +668,25 @@ def history(hid):
                         ventilation,alert_level,alert,timestamp
                         FROM readings WHERE hangar_id=? AND node_id=? AND DATE(timestamp)=?
                         ORDER BY timestamp ASC""", (hid, node, date))]
-    row  = query("SELECT name,user_id FROM hangars WHERE id=?", (hid,), one=True)
+    row = query("SELECT name,user_id FROM hangars WHERE id=?", (hid,), one=True)
     return render_template("history.html", readings=readings, selected_date=date,
                            selected_node=node, node_ids=node_ids, node_pins=node_pins,
                            hangar_id=hid, hangar_name=row[0] if row else "",
-                           is_admin=session["role"]=="admin", owner_id=row[1] if row else None)
+                           is_admin=session["role"]=="admin",
+                           owner_id=row[1] if row else None)
 
 @app.route("/alerts/<int:hid>")
 def alerts_page(hid):
     if "user_id" not in session: return redirect("/login")
-    alerts = [{"id":r[0],"node_id":r[1],"message":r[2],"level":r[3],"status":r[4],"timestamp":r[5]}
-              for r in query("SELECT id,node_id,message,level,status,timestamp FROM alerts WHERE hangar_id=? ORDER BY id DESC LIMIT 200", (hid,))]
+    alerts = [{"id":r[0],"node_id":r[1],"message":r[2],"level":r[3],
+               "status":r[4],"timestamp":r[5]}
+              for r in query("""SELECT id,node_id,message,level,status,timestamp
+                  FROM alerts WHERE hangar_id=? ORDER BY id DESC LIMIT 200""", (hid,))]
     row = query("SELECT name,user_id FROM hangars WHERE id=?", (hid,), one=True)
     return render_template("alerts.html", alerts=alerts, hangar_id=hid,
                            hangar_name=row[0] if row else "",
-                           is_admin=session["role"]=="admin", owner_id=row[1] if row else None)
+                           is_admin=session["role"]=="admin",
+                           owner_id=row[1] if row else None)
 
 @app.route("/update_alert/<int:aid>", methods=["POST"])
 def update_alert(aid):
@@ -607,13 +731,19 @@ def admin_view(uid):
     if session.get("role") != "admin": return redirect("/login")
     u = query("SELECT username FROM users WHERE id=?", (uid,), one=True)
     if not u: return "Introuvable", 404
-    master_row = query("SELECT nsr_pin FROM hangars WHERE user_id=? AND nsr_pin IS NOT NULL LIMIT 1", (uid,), one=True)
+    master_row = query("SELECT nsr_pin FROM hangars WHERE user_id=? AND nsr_pin IS NOT NULL LIMIT 1",
+                       (uid,), one=True)
     master_pin = master_row[0] if master_row else None
     hangars    = []
-    for hid, name, age, nsr_pin in query("SELECT id,name,flock_age,nsr_pin FROM hangars WHERE user_id=?", (uid,)):
+    for hid, name, age, nsr_pin in query(
+            "SELECT id,name,flock_age,nsr_pin FROM hangars WHERE user_id=?", (uid,)):
         t, vals = get_thresh(hid), []
-        for (nid,) in query("SELECT node_id FROM nodes WHERE hangar_id=? AND active=1 AND node_type='ns_edge'", (hid,)):
-            row = query("SELECT temperature,humidity,ammonia,fan,heater,mister,ventilation FROM readings WHERE node_id=? AND hangar_id=? ORDER BY id DESC LIMIT 1", (nid, hid), one=True)
+        for (nid,) in query(
+                "SELECT node_id FROM nodes WHERE hangar_id=? AND active=1 AND node_type='ns_edge'",
+                (hid,)):
+            row = query("""SELECT temperature,humidity,ammonia,fan,heater,mister,ventilation
+                FROM readings WHERE node_id=? AND hangar_id=? ORDER BY id DESC LIMIT 1""",
+                (nid, hid), one=True)
             if row: vals.append(row)
         avg = None
         if vals:
@@ -625,7 +755,9 @@ def admin_view(uid):
                    "fan":vals[-1][3],"heater":vals[-1][4],
                    "mister":vals[-1][5],"ventilation":vals[-1][6],
                    "alert_level":al}
-        alert_count = query("SELECT COUNT(*) FROM alerts WHERE hangar_id=? AND level='critical' AND status='Non traité'", (hid,), one=True)[0]
+        alert_count = query("""SELECT COUNT(*) FROM alerts
+            WHERE hangar_id=? AND level='critical' AND status='Non traité'""",
+            (hid,), one=True)[0]
         hangars.append({"id":hid,"name":name,"flock_age":age,
                         "nsr_pin":nsr_pin or master_pin,
                         "thresholds":t,"avg":avg,"alert_count":alert_count})

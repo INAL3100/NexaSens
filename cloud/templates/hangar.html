@@ -51,6 +51,12 @@
             {% if avg.alert_level == 'critical' %}🚨 Critique{% elif avg.alert_level == 'notify' %}🔔 Attention{% else %}✓ Normal{% endif %}
         </span>
     </div>
+    {% elif not hangar.nsr_pin %}
+    <!-- No NSR assigned yet — show warning bar -->
+    <div class="nsr-bar" style="border-color:rgba(245,158,11,0.4)">
+        <span class="nsr-bar-label" style="color:var(--warning)">◈ NSR-BOX non assigné</span>
+        <span class="status-badge status-warning">⚠️ Configurer</span>
+    </div>
     {% endif %}
 
     <!-- FLOCK AGE + THRESHOLDS (inline editable) -->
@@ -149,10 +155,31 @@
     </div>
     {% endif %}
 
+    <!-- ASSIGN NSR-BOX (shown when no NSR assigned OR always to allow reassignment) -->
+    <div class="settings-panel">
+        <h4 style="margin-bottom:12px">
+            ◈ {% if hangar.nsr_pin %}NSR-BOX assigné : <span style="color:var(--accent);font-family:var(--mono)">{{ hangar.nsr_pin }}</span>{% else %}Assigner un NSR-BOX{% endif %}
+        </h4>
+        {% if error and 'NSR' in error %}<div class="auth-error" style="margin-bottom:10px">{{ error }}</div>{% endif %}
+        <form method="POST" action="/assign_nsr/{{ hangar.id }}" class="add-node-form">
+            <input type="text" name="nsr_pin"
+                   placeholder="PIN NSR-BOX (ex: NSR1)"
+                   maxlength="4"
+                   value="{{ hangar.nsr_pin or '' }}"
+                   style="text-transform:uppercase">
+            <button type="submit" class="btn-primary">
+                {% if hangar.nsr_pin %}Changer{% else %}Assigner{% endif %}
+            </button>
+        </form>
+        <p style="font-size:11px;color:var(--text-muted);margin-top:8px">
+            Un NSR-BOX peut contrôler jusqu'à 3 hangars maximum.
+        </p>
+    </div>
+
     <!-- ADD NS-EDGE -->
     <div class="settings-panel">
         <h4 style="margin-bottom:12px">📡 Ajouter un NS-Edge</h4>
-        {% if error %}<div class="auth-error" style="margin-bottom:10px">{{ error }}</div>{% endif %}
+        {% if error and 'NSR' not in error %}<div class="auth-error" style="margin-bottom:10px">{{ error }}</div>{% endif %}
         <form method="POST" action="/add_node/{{ hangar.id }}" class="add-node-form">
             <input type="text" name="pin" placeholder="PIN (ex: ED02)" maxlength="4" style="text-transform:uppercase">
             <button type="submit" class="btn-primary">Ajouter</button>
@@ -259,12 +286,12 @@ const HANGAR_ID = {{ hangar.id }};
 document.querySelectorAll('.editable').forEach(el => {
     el.addEventListener('click', function() {
         if (this.querySelector('input')) return;
-        const field = this.dataset.field;
+        const field    = this.dataset.field;
         const original = parseFloat(this.dataset.value);
-        const input = document.createElement('input');
-        input.type = 'number';
-        input.value = original;
-        input.step = '0.5';
+        const input    = document.createElement('input');
+        input.type      = 'number';
+        input.value     = original;
+        input.step      = '0.5';
         input.className = 'thresh-input-inline';
         this.textContent = '';
         this.appendChild(input);
@@ -273,15 +300,19 @@ document.querySelectorAll('.editable').forEach(el => {
 
         const save = async () => {
             const val = parseFloat(input.value);
-            if (isNaN(val)) { this.textContent = original; this.dataset.value = original; return; }
-            const res = await fetch(`/set_threshold/${HANGAR_ID}`, {
-                method: 'POST',
+            if (isNaN(val)) {
+                this.textContent = original;
+                this.dataset.value = original;
+                return;
+            }
+            const res  = await fetch(`/set_threshold/${HANGAR_ID}`, {
+                method:  'POST',
                 headers: {'Content-Type':'application/json'},
-                body: JSON.stringify({field, value: val})
+                body:    JSON.stringify({field, value: val})
             });
             const data = await res.json();
             if (data.ok) {
-                this.textContent = val;
+                this.textContent   = val;
                 this.dataset.value = val;
             } else {
                 this.textContent = original;
@@ -289,7 +320,7 @@ document.querySelectorAll('.editable').forEach(el => {
             }
         };
         input.addEventListener('keydown', e => {
-            if (e.key === 'Enter') { input.blur(); }
+            if (e.key === 'Enter')  { input.blur(); }
             if (e.key === 'Escape') { this.textContent = original; }
         });
         input.addEventListener('blur', save);
