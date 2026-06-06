@@ -92,6 +92,7 @@
                         <th>PIN</th>
                         <th>Type</th>
                         <th>Statut</th>
+                        <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -103,6 +104,16 @@
                             <span class="status-badge {% if not p.used %}status-ok{% else %}status-danger{% endif %}">
                                 {% if not p.used %}Disponible{% else %}Utilisé{% endif %}
                             </span>
+                        </td>
+                        <td class="action-btns">
+                            {% if p.used %}
+                            <form method="POST" action="/admin/free_pin/{{ p.pin }}" style="display:inline"
+                                  onsubmit="return confirm('Libérer le PIN {{ p.pin }} ? Le compte qui l\'utilise restera intact mais ne sera plus lié à ce PIN.')">
+                                <button type="submit" class="btn-small btn-success">🔓 Libérer</button>
+                            </form>
+                            {% else %}
+                            <span style="color:var(--text-muted);font-size:11px">—</span>
+                            {% endif %}
                         </td>
                     </tr>
                     {% endfor %}

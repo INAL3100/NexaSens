@@ -116,10 +116,8 @@
             <div class="equip-item {% if fan_state == 'ON' %}equip-on{% else %}equip-off{% endif %}">
                 <span class="equip-icon">🌀</span>
                 <span class="equip-name">Ventilateur</span>
-                <span style="font-size:10px;color:var(--text-muted)">Refroidissement</span>
                 <span class="equip-state" {% if fan_state == 'ON' %}style="color:var(--success)"{% endif %}>
                     {{ fan_state }}
-                    {% if hangar.eq_fan == 'AUTO' %}<span style="font-size:9px;opacity:0.6;margin-left:4px">auto</span>{% endif %}
                 </span>
                 <div class="equip-btns">
                     <form method="POST" action="/control/{{ hangar.id }}/eq_fan/ON"><button class="ebtn {% if hangar.eq_fan == 'ON' %}ebtn-active{% endif %}">ON</button></form>
@@ -133,10 +131,8 @@
             <div class="equip-item {% if heater_state == 'ON' %}equip-on{% else %}equip-off{% endif %}">
                 <span class="equip-icon">🔥</span>
                 <span class="equip-name">Chauffage</span>
-                <span style="font-size:10px;color:var(--text-muted)">Réchauffement</span>
                 <span class="equip-state" {% if heater_state == 'ON' %}style="color:var(--success)"{% endif %}>
                     {{ heater_state }}
-                    {% if hangar.eq_heater == 'AUTO' %}<span style="font-size:9px;opacity:0.6;margin-left:4px">auto</span>{% endif %}
                 </span>
                 <div class="equip-btns">
                     <form method="POST" action="/control/{{ hangar.id }}/eq_heater/ON"><button class="ebtn {% if hangar.eq_heater == 'ON' %}ebtn-active{% endif %}">ON</button></form>
@@ -150,10 +146,8 @@
             <div class="equip-item {% if mister_state == 'ON' %}equip-on{% else %}equip-off{% endif %}">
                 <span class="equip-icon">💦</span>
                 <span class="equip-name">Brumisateur</span>
-                <span style="font-size:10px;color:var(--text-muted)">Humidification</span>
                 <span class="equip-state" {% if mister_state == 'ON' %}style="color:var(--success)"{% endif %}>
                     {{ mister_state }}
-                    {% if hangar.eq_mister == 'AUTO' %}<span style="font-size:9px;opacity:0.6;margin-left:4px">auto</span>{% endif %}
                 </span>
                 <div class="equip-btns">
                     <form method="POST" action="/control/{{ hangar.id }}/eq_mister/ON"><button class="ebtn {% if hangar.eq_mister == 'ON' %}ebtn-active{% endif %}">ON</button></form>
@@ -167,10 +161,8 @@
             <div class="equip-item {% if ventil_state == 'ON' %}equip-on{% else %}equip-off{% endif %}">
                 <span class="equip-icon">💨</span>
                 <span class="equip-name">Ventilation</span>
-                <span style="font-size:10px;color:var(--text-muted)">Renouvellement d'air</span>
                 <span class="equip-state" {% if ventil_state == 'ON' %}style="color:var(--success)"{% endif %}>
                     {{ ventil_state }}
-                    {% if hangar.eq_ventilation == 'AUTO' %}<span style="font-size:9px;opacity:0.6;margin-left:4px">auto</span>{% endif %}
                 </span>
                 <div class="equip-btns">
                     <form method="POST" action="/control/{{ hangar.id }}/eq_ventilation/ON"><button class="ebtn {% if hangar.eq_ventilation == 'ON' %}ebtn-active{% endif %}">ON</button></form>
