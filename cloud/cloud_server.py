@@ -965,12 +965,14 @@ def generate_pin():
         execute("INSERT INTO pins VALUES (NULL,?,?,0,NULL)", (pin, pin_type))
     return redirect("/admin")
 
-@app.route("/admin/toggle_client/<int:uid>", methods=["POST"])
-def toggle_client(uid):
+@app.route("/admin/free_pin/<pin>", methods=["POST"])
+def free_pin(pin):
     if session.get("role") != "admin":
         return redirect("/login")
-    cur = query("SELECT active FROM users WHERE id=?", (uid,), one=True)[0]
-    execute("UPDATE users SET active=? WHERE id=?", (0 if cur else 1, uid))
+    pin = pin.upper().strip()
+    execute("UPDATE pins SET used=0, used_by=NULL WHERE pin=?", (pin,))
+    execute("UPDATE hangars SET nsr_pin=NULL WHERE nsr_pin=?", (pin,))
+    execute("UPDATE nodes SET active=0 WHERE pin=?", (pin,))
     return redirect("/admin")
 
 @app.route("/admin/view/<int:uid>")
