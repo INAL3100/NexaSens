@@ -85,6 +85,9 @@
     <!-- PINS LIST -->
     <div class="admin-section">
         <h2 class="section-title">PINs disponibles</h2>
+        <p style="font-size:11px;color:var(--text-muted);margin-bottom:10px">
+            Cliquez sur "Utilisé" pour libérer un PIN
+        </p>
         <div class="table-container">
             <table>
                 <thead>
@@ -92,7 +95,6 @@
                         <th>PIN</th>
                         <th>Type</th>
                         <th>Statut</th>
-                        <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -101,18 +103,16 @@
                         <td style="font-family: monospace; font-weight:bold; letter-spacing:2px">{{ p.pin }}</td>
                         <td>{{ p.type }}</td>
                         <td>
-                            <span class="status-badge {% if not p.used %}status-ok{% else %}status-danger{% endif %}">
-                                {% if not p.used %}Disponible{% else %}Utilisé{% endif %}
-                            </span>
-                        </td>
-                        <td class="action-btns">
                             {% if p.used %}
                             <form method="POST" action="/admin/free_pin/{{ p.pin }}" style="display:inline"
-                                  onsubmit="return confirm('Libérer le PIN {{ p.pin }} ? Le compte qui l\'utilise restera intact mais ne sera plus lié à ce PIN.')">
-                                <button type="submit" class="btn-small btn-success">🔓 Libérer</button>
+                                  onsubmit="return confirm('Libérer le PIN {{ p.pin }} ?')">
+                                <button type="submit" class="status-badge status-danger"
+                                        style="border:none;cursor:pointer;font-family:inherit">
+                                    Utilisé
+                                </button>
                             </form>
                             {% else %}
-                            <span style="color:var(--text-muted);font-size:11px">—</span>
+                            <span class="status-badge status-ok">Disponible</span>
                             {% endif %}
                         </td>
                     </tr>
