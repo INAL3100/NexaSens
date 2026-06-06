@@ -25,9 +25,18 @@
 # CHANGE: NS-Edge → NSR-BOX is now MQTT (matches memoir section 2.5.1).
 #         NSR-BOX → Cloud remains HTTP.
 #
-# PUSH 3: Fan and Ventilation now have clearly separated roles:
+# PUSH 3: Fan and Ventilation have clearly separated roles:
 #   - Fan (Ventilateur): cooling + dehumidification (high airflow)
 #   - Ventilation: air renewal for NH3 (low airflow, can run with heater)
+#
+# PUSH 4: Alert lifecycle overhaul
+#   - Pi tracks each condition's stability and escalation locally
+#   - When abnormal: emits "en_traitement" (the system is on it)
+#   - After ALERT_ESCALATION_SECONDS unresolved: upgrades to "critical"
+#     + sends SMS + makes a silent call to the farmer
+#   - When normal again: requires ALERT_STABILITY_SECONDS of stable
+#     readings before emitting "log" (prevents flapping)
+#   - Cloud is passive — just displays what Pi sends.
 # ============================================================
 
 from flask import Flask, request, jsonify
@@ -50,7 +59,13 @@ MY_URL       = os.environ.get("MY_URL",    "http://192.168.43.181:5000")
 # ── MQTT BROKER ───────────────────────────────────────────────
 MQTT_BROKER   = os.environ.get("MQTT_BROKER", "localhost")
 MQTT_PORT     = int(os.environ.get("MQTT_PORT", "1883"))
-MQTT_TOPIC    = "nexasens/edge/+/data"  # + wildcard matches any node_id
+MQTT_TOPIC    = "nexasens/edge/+/data"
+
+# ── ALERT LIFECYCLE TIMING (Push 4) ───────────────────────────
+# Both configurable via env vars so demo/testing can shorten them.
+# Production defaults: 600s escalation, 120s stability.
+ALERT_ESCALATION_SECONDS = int(os.environ.get("ALERT_ESCALATION_SECONDS", "600"))
+ALERT_STABILITY_SECONDS  = int(os.environ.get("ALERT_STABILITY_SECONDS",  "120"))
 
 # ── GSM MODEM ─────────────────────────────────────────────────
 GSM_ENABLED  = False
@@ -95,7 +110,7 @@ def set_relay(name, state):
 setup_gpio()
 
 # ============================================================
-# GSM SMS
+# GSM SMS + VOICE
 # ============================================================
 
 _modem = None
@@ -122,6 +137,25 @@ def send_sms(message):
             _modem.sendSms(FARMER_PHONE, message)
     except Exception as e:
         print(f"[SMS ERROR] {e}")
+
+def make_silent_call(phone=None):
+    """Ring the farmer briefly. If they answer → hang up immediately.
+    Used after critical SMS to make sure they actually wake up."""
+    phone = phone or FARMER_PHONE
+    if not GSM_ENABLED:
+        print(f"[CALL] would ring {phone} (silent, hang up on answer)")
+        return
+    try:
+        call = _modem.dial(phone)
+        # Ring for up to 8 seconds. Hang up the moment they pick up.
+        for _ in range(8):
+            time.sleep(1)
+            if getattr(call, "answered", False):
+                call.hangup()
+                return
+        call.hangup()  # they didn't answer — that's a free missed-call alert
+    except Exception as e:
+        print(f"[CALL ERROR] {e}")
 
 threading.Thread(target=setup_gsm, daemon=True).start()
 
@@ -345,11 +379,7 @@ def get_hangar_for_pin(pin):
 
 # ============================================================
 # EQUIPMENT DECISION LOGIC (hysteresis) — per hangar
-#
-# Push 3: Fan and Ventilation now have clearly separated roles.
-#   - Fan (Ventilateur): cooling/dehumidification — responds to temp or humidity
-#   - Ventilation: NH3 air renewal — physically separate low-airflow device
-#                  can run alongside heater without significant heat loss
+# Fan = cooling + humidity, Ventilation = NH3 (Push 3)
 # ============================================================
 
 def decide(temp, hum, nh3, t, hangar_id):
@@ -366,38 +396,28 @@ def decide(temp, hum, nh3, t, hangar_id):
     eq  = _equipment[hid_str]
 
     def resolve(name, on_cond, off_cond):
-        # Priority 1: farmer manual SMS override
         if eq[name] != "AUTO":
             return eq[name]
-        # Priority 2: dashboard override
         if ov.get(f"eq_{name}") in ("ON", "OFF"):
             return ov[f"eq_{name}"]
-        # Priority 3: AUTO hysteresis
         if on_cond:
             return "ON"
         if off_cond:
             return "OFF"
-        return prev[name]  # dead band — keep previous
+        return prev[name]
 
-    # Heater: cold protection
     heater = resolve("heater",
                      temp <= t["temp_min"],
                      temp >= t["temp_min"] + 1)
 
-    # Fan (Ventilateur): cooling + dehumidification
-    # High-airflow device — responds to temperature or humidity
     fan    = resolve("fan",
                      temp >= t["temp_max"] or hum >= t["hum_max"],
                      temp <= t["temp_max"] - 1 and hum <= t["hum_max"] - 2)
 
-    # Mister: humidify when dry, cool by evaporation when hot
     mister = resolve("mister",
                      hum <= t["hum_min"] or temp >= t["temp_max"],
                      hum >= t["hum_min"] + 2 and temp <= t["temp_max"] - 1)
 
-    # Ventilation: air renewal (NH3 removal)
-    # Low-airflow device — physically separate from fan,
-    # can run with heater without significant heat loss
     ventil = resolve("ventilation",
                      nh3 >= t["ammonia_max"],
                      nh3 <= t["ammonia_max"] - 2)
@@ -405,7 +425,6 @@ def decide(temp, hum, nh3, t, hangar_id):
     decisions = {"fan": fan, "heater": heater, "mister": mister, "ventilation": ventil}
     _prev_decisions[hangar_id] = decisions
 
-    # Apply to relays only in AUTO mode
     for name, state in decisions.items():
         if eq[name] == "AUTO" and state in ("ON", "OFF"):
             set_relay(name, state)
@@ -413,62 +432,163 @@ def decide(temp, hum, nh3, t, hangar_id):
     return fan, heater, mister, ventil
 
 # ============================================================
-# ALERT LOGIC
+# ALERT LIFECYCLE (Push 4)
+#
+# Per (pin, condition_type), we track:
+#   - opened_at:  when the condition first triggered (for escalation timer)
+#   - last_level: 'en_traitement' or 'critical' that we last emitted
+#   - last_msg:   the human message for the last abnormal level
+#   - stable_since: when we first saw a normal reading after this condition
+#                   (None if currently abnormal)
+#   - sms_sent:   True once we've fired SMS+call for this condition
+#                 (prevents duplicate notifications)
+#
+# Lifecycle:
+#   normal              → emit "log"  (clear tracker)
+#   first abnormal      → start opened_at, emit en_traitement
+#   abnormal for >10min → emit critical, SMS+call once, set sms_sent=True
+#   normal again        → start stable_since, keep emitting last_level
+#   stable for >2min    → emit "log", clear tracker entirely
 # ============================================================
 
-_alert_sent = {}
+# Condition types — broad families that share an escalation timer
+def _condition_type(temp, hum, nh3, t):
+    if nh3  >= t["ammonia_max"]:    return "nh3"
+    if temp >= t["temp_max"]:       return "temp_high"
+    if temp <= t["temp_min"]:       return "temp_low"
+    if hum  >= t["hum_max"]:        return "hum_high"
+    if hum  <= t["hum_min"]:        return "hum_low"
+    return None  # normal
 
-def _alert_condition_key(temp, hum, nh3, t):
-    if nh3  >= t["ammonia_max"] + 2: return "nh3_critical"
-    if nh3  >= t["ammonia_max"]:     return "nh3_notify"
-    if temp >= t["temp_max"] + 2:    return "temp_high_critical"
-    if temp >= t["temp_max"]:        return "temp_high_notify"
-    if temp <= t["temp_min"] - 2:    return "temp_low_critical"
-    if temp <= t["temp_min"]:        return "temp_low_notify"
-    if hum  >= t["hum_max"] + 4:     return "hum_high_critical"
-    if hum  >= t["hum_max"]:         return "hum_high_notify"
-    if hum  <= t["hum_min"] - 4:     return "hum_low_critical"
-    if hum  <= t["hum_min"]:         return "hum_low_notify"
-    return "normal"
+# Compute severity ("en_traitement" by default, "critical" if value is way out of range)
+def _severity(temp, hum, nh3, t, cond):
+    if cond == "nh3":
+        if nh3 >= t["ammonia_max"] + 2:
+            return "critical", f"🚨 Ammoniac critique: {nh3}ppm"
+        return "en_traitement", f"⚠️ Ammoniac élevé: {nh3}ppm"
+    if cond == "temp_high":
+        if temp >= t["temp_max"] + 2:
+            return "critical", f"🚨 Température critique: {temp}°C"
+        return "en_traitement", f"⚠️ Température élevée: {temp}°C"
+    if cond == "temp_low":
+        if temp <= t["temp_min"] - 2:
+            return "critical", f"🚨 Température trop basse: {temp}°C"
+        return "en_traitement", f"⚠️ Température basse: {temp}°C"
+    if cond == "hum_high":
+        if hum >= t["hum_max"] + 4:
+            return "critical", f"🚨 Humidité critique: {hum}%"
+        return "en_traitement", f"⚠️ Humidité élevée: {hum}%"
+    if cond == "hum_low":
+        if hum <= t["hum_min"] - 4:
+            return "critical", f"🚨 Humidité trop basse: {hum}%"
+        return "en_traitement", f"⚠️ Humidité basse: {hum}%"
+    return "log", "Normal"
+
+# Per-(pin, cond) tracker
+_alert_state = {}   # key: (pin, cond) → dict with opened_at, last_level, last_msg, stable_since, sms_sent
+
+def _notify_critical(pin, msg):
+    """Send SMS + silent call. Called once per (pin, cond) when escalating."""
+    full = f"Nexa Sens [{pin}] {msg}"
+    send_sms(full)
+    # Silent call right after — make sure farmer wakes up
+    threading.Thread(target=make_silent_call, daemon=True).start()
 
 def check_alert(temp, hum, nh3, t, pin):
-    if   nh3  >= t["ammonia_max"] + 2: level, msg = "critical", f"🚨 Ammoniac critique: {nh3}ppm"
-    elif temp >= t["temp_max"]   + 2:  level, msg = "critical", f"🚨 Température critique: {temp}°C"
-    elif temp <= t["temp_min"]   - 2:  level, msg = "critical", f"🚨 Température trop basse: {temp}°C"
-    elif hum  >= t["hum_max"]    + 4:  level, msg = "critical", f"🚨 Humidité critique: {hum}%"
-    elif hum  <= t["hum_min"]    - 4:  level, msg = "critical", f"🚨 Humidité trop basse: {hum}%"
-    elif nh3  >= t["ammonia_max"]:     level, msg = "notify",   f"⚠️ Ammoniac élevé: {nh3}ppm"
-    elif temp >= t["temp_max"]:        level, msg = "notify",   f"⚠️ Température élevée: {temp}°C"
-    elif temp <= t["temp_min"]:        level, msg = "notify",   f"⚠️ Température basse: {temp}°C"
-    elif hum  >= t["hum_max"]:         level, msg = "notify",   f"⚠️ Humidité élevée: {hum}%"
-    elif hum  <= t["hum_min"]:         level, msg = "notify",   f"⚠️ Humidité basse: {hum}%"
-    else:
-        _alert_sent.pop(pin, None)
+    """Decide the alert level for this reading, applying lifecycle rules.
+    Returns (level, msg). level ∈ {'log', 'en_traitement', 'critical'}."""
+    now  = time.time()
+    cond = _condition_type(temp, hum, nh3, t)
+
+    # ── Case A: condition is currently abnormal ──────────────────
+    if cond is not None:
+        key      = (pin, cond)
+        state    = _alert_state.get(key)
+        sev, msg = _severity(temp, hum, nh3, t, cond)
+
+        if state is None:
+            # New abnormality — start tracking, emit en_traitement (or critical if extreme)
+            state = {
+                "opened_at":    now,
+                "last_level":   sev,
+                "last_msg":     msg,
+                "stable_since": None,
+                "sms_sent":     False
+            }
+            _alert_state[key] = state
+            # Immediate critical (e.g. temp jumps to +2 instantly) → notify right away
+            if sev == "critical" and not state["sms_sent"]:
+                _notify_critical(pin, msg)
+                state["sms_sent"] = True
+            return sev, msg
+
+        # Existing tracker — recovering condition resumed, cancel stability counter
+        state["stable_since"] = None
+        state["last_msg"]     = msg
+
+        # Did it reach extreme severity (instant critical) or has escalation time elapsed?
+        elapsed = now - state["opened_at"]
+        if sev == "critical" or elapsed >= ALERT_ESCALATION_SECONDS:
+            # If the timer escalated us (but the value itself isn't extreme yet),
+            # upgrade the message to a "non résolu" critical phrasing so the
+            # farmer's SMS reflects that the situation persists, not just that
+            # it's elevated.
+            if sev != "critical":
+                msg = msg.replace("⚠️", "🚨") + " — non résolu après 10min"
+            state["last_level"] = "critical"
+            state["last_msg"]   = msg
+            if not state["sms_sent"]:
+                _notify_critical(pin, msg)
+                state["sms_sent"] = True
+            return "critical", msg
+        else:
+            state["last_level"] = "en_traitement"
+            return "en_traitement", msg
+
+    # ── Case B: condition is currently normal ────────────────────
+    # Look at every open condition for this pin and decide what to emit.
+    open_states = [(k, v) for k, v in _alert_state.items() if k[0] == pin]
+    if not open_states:
         return "log", "Normal"
 
-    condition_key = _alert_condition_key(temp, hum, nh3, t)
-    dedup_key     = f"{pin}:{condition_key}"
+    # Use the highest-severity remaining open condition for display
+    LEVEL_ORDER = {"critical": 2, "en_traitement": 1, "log": 0}
+    open_states.sort(key=lambda kv: LEVEL_ORDER.get(kv[1]["last_level"], 0), reverse=True)
 
-    if level == "critical" and dedup_key not in _alert_sent:
-        _alert_sent[dedup_key] = True
-        send_sms(f"Nexa Sens [{pin}] {msg}")
+    # Walk each open condition and update its stability tracker
+    any_still_pending = False
+    for key, state in list(open_states):
+        if state["stable_since"] is None:
+            state["stable_since"] = now
+        elapsed_stable = now - state["stable_since"]
+        if elapsed_stable >= ALERT_STABILITY_SECONDS:
+            # 2 min stable → this condition is truly resolved
+            del _alert_state[key]
+        else:
+            any_still_pending = True
 
-    return level, msg
+    if not any_still_pending:
+        return "log", "Normal"
+
+    # At least one condition is still in stability window — keep showing its level
+    # (use the highest-severity remaining one)
+    remaining = [(k, v) for k, v in _alert_state.items() if k[0] == pin]
+    if not remaining:
+        return "log", "Normal"
+    remaining.sort(key=lambda kv: LEVEL_ORDER.get(kv[1]["last_level"], 0), reverse=True)
+    top = remaining[0][1]
+    return top["last_level"], top["last_msg"]
 
 # ============================================================
 # CORE READING PROCESSOR
-# Validates, decides, stores locally, forwards to cloud.
-# Called by the MQTT handler.
 # ============================================================
 
 def process_reading(pin, temp, humidity, ammonia):
-    """Process one sensor reading end-to-end."""
     pin = (pin or "").upper().strip()
     if not pin:
         print("[READING] Rejected: empty pin")
         return
 
-    # Range validation (same limits as before)
     if not (-5  <= temp     <= 60):
         print(f"[READING] {pin} rejected: T={temp} out of range"); return
     if not (0   <= humidity <= 100):
@@ -518,7 +638,6 @@ def process_reading(pin, temp, humidity, ammonia):
 
 # ============================================================
 # MQTT SUBSCRIBER
-# Listens on nexasens/edge/+/data and routes to process_reading.
 # ============================================================
 
 def on_mqtt_connect(client, userdata, flags, rc, properties=None):
@@ -532,17 +651,12 @@ def on_mqtt_connect(client, userdata, flags, rc, properties=None):
 def on_mqtt_message(client, userdata, msg):
     try:
         data = json.loads(msg.payload.decode("utf-8"))
-
-        # Extract node_id either from payload or from topic
         topic_parts = msg.topic.split("/")
         topic_node  = topic_parts[2] if len(topic_parts) >= 3 else None
         pin = (data.get("node_id") or topic_node or "").upper()
-
         temp     = float(data["temperature"])
         humidity = float(data["humidity"])
-        # Simulator publishes "nh3"; accept both names
         ammonia  = float(data.get("ammonia", data.get("nh3", 0)))
-
         process_reading(pin, temp, humidity, ammonia)
     except Exception as e:
         print(f"[MQTT ERROR] {e} — payload: {msg.payload[:200]!r}")
@@ -562,31 +676,27 @@ def start_mqtt():
 threading.Thread(target=start_mqtt, daemon=True).start()
 
 # ============================================================
-# CONFIG PUSH FROM CLOUD (still HTTP — cloud → Pi)
+# CONFIG PUSH FROM CLOUD
 # ============================================================
 
 @app.route("/update_config", methods=["POST"])
 def update_config():
     if request.headers.get("X-API-KEY") != API_KEY:
         return jsonify({"error": "Unauthorized"}), 401
-
     data        = request.get_json()
     new_hangars = data.get("hangars", {})
     _hangar_config.update(new_hangars)
-
     for hid_str in new_hangars:
         _ensure_equipment(int(hid_str))
-
     for hid, cfg in _hangar_config.items():
         for pin in cfg.get("pins", []):
             if pin not in _edge_last_seen:
                 _edge_last_seen[pin] = "1970-01-01 00:00:00"
-
     print(f"[CONFIG] Updated from cloud push — {len(_hangar_config)} hangar(s)")
     return jsonify({"ok": True}), 200
 
 # ============================================================
-# FORWARD TO CLOUD (HTTP — Pi → Cloud)
+# FORWARD TO CLOUD
 # ============================================================
 
 def forward_to_cloud(payload):
@@ -762,7 +872,7 @@ def status():
     }), 200
 
 # ============================================================
-# STARTUP — pull config from cloud once
+# STARTUP
 # ============================================================
 
 def startup_sync():
@@ -778,10 +888,8 @@ def startup_sync():
             data = res.json()
             _hangar_config.update(data.get("hangars", {}))
             print(f"[STARTUP] Config loaded — {len(_hangar_config)} hangar(s)")
-
             for hid_str in _hangar_config:
                 _ensure_equipment(int(hid_str))
-
             for hid, cfg in _hangar_config.items():
                 for pin in cfg.get("pins", []):
                     if pin not in _edge_last_seen:
@@ -801,12 +909,14 @@ threading.Thread(target=startup_sync, daemon=True).start()
 if __name__ == "__main__":
     print("=" * 55)
     print("  NSR-BOX Server — Nexa Sens")
-    print(f"  Cloud     : {CLOUD_URL}")
-    print(f"  NSR PIN   : {NSR_PIN}")
-    print(f"  My URL    : {MY_URL}")
-    print(f"  MQTT      : {MQTT_BROKER}:{MQTT_PORT}  topic={MQTT_TOPIC}")
-    print(f"  GPIO      : {'ON' if GPIO_ENABLED else 'OFF (no relays)'}")
-    print(f"  GSM SMS   : {'ON' if GSM_ENABLED else 'OFF (no modem)'}")
-    print(f"  UPS Power : {'ON' if UPS_ENABLED else 'OFF (no UPS)'}")
+    print(f"  Cloud      : {CLOUD_URL}")
+    print(f"  NSR PIN    : {NSR_PIN}")
+    print(f"  My URL     : {MY_URL}")
+    print(f"  MQTT       : {MQTT_BROKER}:{MQTT_PORT}  topic={MQTT_TOPIC}")
+    print(f"  Alert esc  : {ALERT_ESCALATION_SECONDS}s")
+    print(f"  Alert stab : {ALERT_STABILITY_SECONDS}s")
+    print(f"  GPIO       : {'ON' if GPIO_ENABLED else 'OFF (no relays)'}")
+    print(f"  GSM SMS    : {'ON' if GSM_ENABLED else 'OFF (no modem)'}")
+    print(f"  UPS Power  : {'ON' if UPS_ENABLED else 'OFF (no UPS)'}")
     print("=" * 55)
     app.run(host="0.0.0.0", port=5000, debug=False)

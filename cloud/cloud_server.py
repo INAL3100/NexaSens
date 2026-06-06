@@ -7,8 +7,8 @@
 #   - Serve dashboard to farmer/admin
 #   - Handle farmer overrides (push to Pi immediately)
 #   - Monitor Pi heartbeat (alert if Pi goes down)
-#   - Send Twilio SMS ONLY if Pi is completely dead
 #   - NO equipment decisions (Pi handles all of that)
+#   - NO alert escalation (Pi handles all of that — Push 4)
 #
 # BUGS FIXED:
 #   B1. Cloud no longer re-evaluates alert_level from sensor values
@@ -25,7 +25,11 @@
 #   B10. sms_override updates only correct hangar
 #   B11. push_config_to_pi logs warning if Pi URL unknown
 #   B12. hangar_page() now resolves AUTO equipment to Pi's last decision
-#        so AUTO mode shows the actual ON/OFF state, not just "AUTO"
+#
+# PUSH 4:
+#   - /receive accepts new level "en_traitement" (yellow)
+#   - Cloud is fully passive — Pi handles all alert lifecycle (escalation,
+#     stability, SMS, voice calls). Cloud just records what Pi says.
 # ============================================================
 
 from flask import Flask, request, jsonify, render_template, redirect, session
@@ -35,11 +39,10 @@ import sqlite3, random, string, threading, time, os, requests as http
 
 app = Flask(__name__)
 
-# ── SECRETS ───────────────────────────────────────────────────
 app.secret_key = os.environ.get("SECRET_KEY", "nexasens_dev_secret")
 API_KEY        = os.environ.get("API_KEY",    "NEXASENS_SECRET_KEY")
 
-# ── TWILIO (only for Pi-down alerts) ─────────────────────────
+# ── TWILIO (cloud's own SMS path — only used if explicitly enabled) ──
 TWILIO_ENABLED = os.environ.get("TWILIO_ENABLED", "false").lower() == "true"
 TWILIO_SID     = os.environ.get("TWILIO_SID",   "")
 TWILIO_TOKEN   = os.environ.get("TWILIO_TOKEN", "")
@@ -56,7 +59,7 @@ def send_twilio_sms(to, msg):
     except Exception as e:
         print(f"[TWILIO ERROR] {e}")
 
-# ── DATABASE (thread-safe) ────────────────────────────────────
+# ── DATABASE ──────────────────────────────────────────────────
 DB_PATH   = "nexasens_cloud.db"
 _db_local = threading.local()
 
@@ -75,7 +78,6 @@ def execute(sql, params=()):
     conn.commit()
     return cur
 
-# ── DATABASE SETUP ────────────────────────────────────────────
 def init_db():
     conn = get_db()
     conn.execute("""CREATE TABLE IF NOT EXISTS users (
@@ -159,7 +161,6 @@ def init_db():
 
 init_db()
 
-# ── THRESHOLDS ────────────────────────────────────────────────
 THRESHOLDS = {
     1: {"temp_min": 32, "temp_max": 35, "hum_min": 60, "hum_max": 70, "ammonia_max": 10},
     2: {"temp_min": 29, "temp_max": 32, "hum_min": 60, "hum_max": 70, "ammonia_max": 10},
@@ -203,12 +204,10 @@ EQUIPMENT_COLS = {
     "eq_mister": "eq_mister", "eq_ventilation": "eq_ventilation"
 }
 
-# ── PUSH CONFIG TO PI ─────────────────────────────────────────
 def push_config_to_pi(nsr_pin):
     row = query("SELECT pi_url FROM nsr_heartbeat WHERE pin=?", (nsr_pin,), one=True)
     if not row or not row[0]:
-        print(f"[PUSH] WARNING — Pi URL unknown for {nsr_pin}. "
-              f"Pi will pull config on next startup.")
+        print(f"[PUSH] WARNING — Pi URL unknown for {nsr_pin}.")
         return
     pi_url = row[0]
     try:
@@ -246,7 +245,6 @@ def build_nsr_config(nsr_pin):
         }
     return {"hangars": hangars}
 
-# ── PI WATCHDOG ───────────────────────────────────────────────
 def pi_watchdog():
     while True:
         time.sleep(60)
@@ -357,7 +355,7 @@ def register():
     return render_template("register.html")
 
 # ═══════════════════════════════════════════════════════════════
-# DASHBOARD
+# DASHBOARD + HANGAR PAGE
 # ═══════════════════════════════════════════════════════════════
 
 @app.route("/")
@@ -404,7 +402,8 @@ def _build_hangar_summaries(uid, master_pin):
             at = round(sum(v[0] for v in vals) / len(vals), 1)
             ah = round(sum(v[1] for v in vals) / len(vals), 1)
             an = round(sum(v[2] for v in vals) / len(vals), 1)
-            level_order = {"critical": 2, "notify": 1, "log": 0}
+            # Push 4: order includes en_traitement between log and critical
+            level_order = {"critical": 3, "en_traitement": 2, "notify": 2, "log": 0}
             al = max((v[7] for v in vals), key=lambda x: level_order.get(x, 0))
             eq_row = query(
                 "SELECT eq_fan, eq_heater, eq_mister, eq_ventilation FROM hangars WHERE id=?",
@@ -438,11 +437,6 @@ def _build_hangar_summaries(uid, master_pin):
             "thresholds": t, "avg": avg, "alert_count": alert_count
         })
     return hangars
-
-# ═══════════════════════════════════════════════════════════════
-# HANGAR PAGE
-# B12 FIX: AUTO equipment now resolved to Pi's actual last decision
-# ═══════════════════════════════════════════════════════════════
 
 @app.route("/hangar/<int:hid>")
 def hangar_page(hid):
@@ -501,12 +495,12 @@ def hangar_page(hid):
         at = round(sum(n["temperature"] for n in active) / len(active), 1)
         ah = round(sum(n["humidity"]    for n in active) / len(active), 1)
         an = round(sum(n["ammonia"]     for n in active) / len(active), 1)
-        level_order = {"critical": 2, "notify": 1, "log": 0}
+        # Push 4: en_traitement ranks above log/notify but below critical
+        level_order = {"critical": 3, "en_traitement": 2, "notify": 2, "log": 0}
         al = max(
             (n["alert_level"] for n in active),
             key=lambda x: level_order.get(x, 0))
 
-        # B12 FIX: resolve AUTO equipment to Pi's actual last decision
         last_reading = query(
             """SELECT fan, heater, mister, ventilation FROM readings
                WHERE hangar_id=? ORDER BY id DESC LIMIT 1""", (hid,), one=True)
@@ -713,7 +707,12 @@ def control(hid, equipment, action):
     return redirect(f"/hangar/{hid}")
 
 # ═══════════════════════════════════════════════════════════════
-# RECEIVE DATA
+# RECEIVE DATA — Push 4 lifecycle
+#
+# Pi decides everything. Cloud just records the decision:
+#   - level == "en_traitement" → open alert as level=en_traitement (yellow)
+#   - level == "critical"      → upgrade existing or insert as critical (red)
+#   - level == "log"           → close all open alerts for this hangar/source
 # ═══════════════════════════════════════════════════════════════
 
 @app.route("/receive", methods=["POST"])
@@ -762,27 +761,38 @@ def receive():
 
     nsr_row = query("SELECT nsr_pin FROM hangars WHERE id=?", (hid,), one=True)
     alert_source = nsr_row[0] if nsr_row and nsr_row[0] else node_id
-    msg_full = msg
+    msg_full = msg  # Push 1: no [capteur ED01] suffix
 
-    if level == "notify":
+    # ── Treat both "en_traitement" and legacy "notify" as the same state ─
+    if level in ("en_traitement", "notify"):
         existing = query(
             """SELECT id FROM alerts
                WHERE hangar_id=? AND node_id=? AND alert_type=?
-                 AND level='notify' AND status IN ('En cours','Non traité')""",
+                 AND level IN ('en_traitement','notify')
+                 AND status IN ('En cours','Non traité')""",
             (hid, alert_source, alert_type), one=True)
         if not existing:
             execute(
                 """INSERT INTO alerts
                    (hangar_id, node_id, message, alert_type, level, status, timestamp)
-                   VALUES (?,?,?,?,'notify','En cours',?)""",
+                   VALUES (?,?,?,?,'en_traitement','En cours',?)""",
                 (hid, alert_source, msg_full, alert_type, ts))
+        else:
+            # Update message to reflect latest value
+            execute(
+                """UPDATE alerts SET message=? WHERE id=?""",
+                (msg_full, existing[0]))
 
     elif level == "critical":
+        # Promote any open en_traitement / notify for this condition to critical
         execute(
-            """UPDATE alerts SET level='critical', status='Non traité', message=?
-               WHERE hangar_id=? AND node_id=? AND alert_type=?
-                 AND level='notify' AND status IN ('En cours','Non traité')""",
+            """UPDATE alerts
+                  SET level='critical', status='Non traité', message=?
+                WHERE hangar_id=? AND node_id=? AND alert_type=?
+                  AND level IN ('en_traitement','notify')
+                  AND status IN ('En cours','Non traité')""",
             (msg_full, hid, alert_source, alert_type))
+        # If no open one existed, insert a new critical row
         if not query(
                 """SELECT id FROM alerts
                    WHERE hangar_id=? AND node_id=? AND alert_type=?
@@ -795,26 +805,27 @@ def receive():
                 (hid, alert_source, msg_full, alert_type, ts))
 
     elif level == "log":
+        # Pi confirms condition cleared (after 2-min stability) → resolve all open alerts
         execute(
             """UPDATE alerts SET status='Traité'
                WHERE hangar_id=? AND node_id=?
                  AND status IN ('En cours','Non traité')
-                 AND level IN ('notify','critical')""",
+                 AND level IN ('en_traitement','notify','critical')""",
             (hid, alert_source))
 
     return jsonify({"ok": True, "node_id": node_id, "hangar_id": hid}), 200
 
 def _derive_alert_type(temp, hum, nh3, t, level):
-    if level == "log":       return "normal"
+    if level == "log":               return "normal"
     if nh3  >= t["ammonia_max"] - 2: return "ammonia"
     if temp >= t["temp_max"]:        return "temp_high"
     if temp <= t["temp_min"]:        return "temp_low"
-    if hum  >= t["hum_max"] - 2:    return "hum_high"
-    if hum  <= t["hum_min"]:        return "hum_low"
+    if hum  >= t["hum_max"] - 2:     return "hum_high"
+    if hum  <= t["hum_min"]:         return "hum_low"
     return "general"
 
 # ═══════════════════════════════════════════════════════════════
-# PI HEARTBEAT
+# PI HEARTBEAT + CONFIG + SMS OVERRIDE
 # ═══════════════════════════════════════════════════════════════
 
 @app.route("/heartbeat", methods=["POST"])
@@ -963,6 +974,14 @@ def generate_pin():
             if not query("SELECT id FROM pins WHERE pin=?", (pin,), one=True):
                 break
         execute("INSERT INTO pins VALUES (NULL,?,?,0,NULL)", (pin, pin_type))
+    return redirect("/admin")
+
+@app.route("/admin/toggle_client/<int:uid>", methods=["POST"])
+def toggle_client(uid):
+    if session.get("role") != "admin":
+        return redirect("/login")
+    cur = query("SELECT active FROM users WHERE id=?", (uid,), one=True)[0]
+    execute("UPDATE users SET active=? WHERE id=?", (0 if cur else 1, uid))
     return redirect("/admin")
 
 @app.route("/admin/free_pin/<pin>", methods=["POST"])

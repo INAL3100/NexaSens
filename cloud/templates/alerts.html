@@ -6,7 +6,6 @@
     <title>Nexa Sens — Alertes</title>
     <link rel="stylesheet" href="/static/style.css">
     <style>
-        /* Clickable status badge */
         .status-clickable {
             cursor: pointer;
             border: none;
@@ -64,9 +63,10 @@
                     <td>
                         <span class="alert-status-badge
                             {% if a.level == 'critical' %}status-danger
-                            {% elif a.level == 'notify' %}status-warning
+                            {% elif a.level in ('en_traitement', 'notify') %}status-warning
                             {% else %}status-ok{% endif %}">
                             {% if a.level == 'critical' %}🚨 Critique
+                            {% elif a.level == 'en_traitement' %}🟡 En traitement
                             {% elif a.level == 'notify' %}🔔 Attention
                             {% else %}✓ Normal{% endif %}
                         </span>
@@ -95,7 +95,6 @@
 <script>
 const HANGAR_ID = {{ hangar_id }};
 
-// Cycle: Non traité -> En cours -> Traité -> Non traité
 const CYCLE = {
     'Non traité': 'En cours',
     'En cours':   'Traité',
@@ -130,10 +129,8 @@ document.querySelectorAll('.status-clickable').forEach(btn => {
             });
 
             if (res.ok || res.redirected) {
-                // Success — update the badge in place
                 this.textContent = next;
                 this.dataset.currentStatus = next;
-                // Swap classes
                 this.classList.remove('status-danger', 'status-warning', 'status-ok');
                 this.classList.add(CLASS_FOR[next]);
             } else {
