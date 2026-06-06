@@ -762,7 +762,7 @@ def receive():
 
     nsr_row = query("SELECT nsr_pin FROM hangars WHERE id=?", (hid,), one=True)
     alert_source = nsr_row[0] if nsr_row and nsr_row[0] else node_id
-    msg_full = f"{msg} [capteur {pin}]"
+    msg_full = msg
 
     if level == "notify":
         existing = query(

@@ -5,6 +5,45 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Nexa Sens — {{ hangar.name }}</title>
     <link rel="stylesheet" href="/static/style.css">
+    <style>
+        /* Hide number-input spinners */
+        input.thresh-input-inline::-webkit-outer-spin-button,
+        input.thresh-input-inline::-webkit-inner-spin-button,
+        input.age-input::-webkit-outer-spin-button,
+        input.age-input::-webkit-inner-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+        input.thresh-input-inline,
+        input.age-input {
+            -moz-appearance: textfield;
+            appearance: textfield;
+        }
+        /* Configuration section layout */
+        .config-section {
+            background: var(--card-bg, rgba(30, 41, 59, 0.4));
+            border: 1px solid var(--border, rgba(148, 163, 184, 0.15));
+            border-radius: 8px;
+            padding: 16px;
+            margin: 20px 0;
+        }
+        .config-section h3 {
+            margin: 0 0 14px 0;
+            font-size: 15px;
+            color: var(--text, #e2e8f0);
+        }
+        .config-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+        @media (max-width: 700px) {
+            .config-grid { grid-template-columns: 1fr; }
+        }
+        .config-grid .settings-panel {
+            margin: 0;
+        }
+    </style>
 </head>
 <body>
 <header>
@@ -27,12 +66,6 @@
         <div class="dropdown"><a href="/logout">Déconnexion</a></div>
     </div>
 </header>
-
-{% for a in active_alerts %}
-{% if a[3] == 'critical' %}<div class="alert-banner banner-critical">🚨 {{ a[2] }} <span class="banner-time">{{ a[5] }}</span></div>
-{% elif a[3] == 'notify' %}<div class="alert-banner banner-notify">🔔 {{ a[2] }} <span class="banner-time">{{ a[5] }}</span></div>
-{% endif %}
-{% endfor %}
 
 <main>
     <h1 class="page-title">{{ hangar.name }}</h1>
@@ -175,35 +208,46 @@
     </div>
     {% endif %}
 
-    <!-- ASSIGN NSR-BOX -->
-    <div class="settings-panel">
-        <h4 style="margin-bottom:12px">
-            ◈ {% if hangar.nsr_pin %}NSR-BOX assigné : <span style="color:var(--accent);font-family:var(--mono)">{{ hangar.nsr_pin }}</span>{% else %}Assigner un NSR-BOX{% endif %}
-        </h4>
-        {% if error and 'NSR' in error %}<div class="auth-error" style="margin-bottom:10px">{{ error }}</div>{% endif %}
-        <form method="POST" action="/assign_nsr/{{ hangar.id }}" class="add-node-form">
-            <input type="text" name="nsr_pin"
-                   placeholder="PIN NSR-BOX (ex: NSR1)"
-                   maxlength="4"
-                   value="{{ hangar.nsr_pin or '' }}"
-                   style="text-transform:uppercase">
-            <button type="submit" class="btn-primary">
-                {% if hangar.nsr_pin %}Changer{% else %}Assigner{% endif %}
-            </button>
-        </form>
-        <p style="font-size:11px;color:var(--text-muted);margin-top:8px">
-            Un NSR-BOX peut contrôler jusqu'à 3 hangars maximum.
-        </p>
-    </div>
+    <!-- CONFIGURATION SECTION -->
+    <div class="config-section">
+        <h3>⚙️ Configuration</h3>
+        <div class="config-grid">
 
-    <!-- ADD NS-EDGE -->
-    <div class="settings-panel">
-        <h4 style="margin-bottom:12px">📡 Ajouter un NS-Edge</h4>
-        {% if error and 'NSR' not in error %}<div class="auth-error" style="margin-bottom:10px">{{ error }}</div>{% endif %}
-        <form method="POST" action="/add_node/{{ hangar.id }}" class="add-node-form">
-            <input type="text" name="pin" placeholder="PIN (ex: ED02)" maxlength="4" style="text-transform:uppercase">
-            <button type="submit" class="btn-primary">Ajouter</button>
-        </form>
+            <!-- ASSIGN NSR-BOX -->
+            <div class="settings-panel">
+                <h4 style="margin-bottom:12px">
+                    ◈ {% if hangar.nsr_pin %}NSR-BOX assigné : <span style="color:var(--accent);font-family:var(--mono)">{{ hangar.nsr_pin }}</span>{% else %}Assigner un NSR-BOX{% endif %}
+                </h4>
+                {% if error and 'NSR' in error %}<div class="auth-error" style="margin-bottom:10px">{{ error }}</div>{% endif %}
+                <form method="POST" action="/assign_nsr/{{ hangar.id }}" class="add-node-form">
+                    <input type="text" name="nsr_pin"
+                           placeholder="PIN NSR-BOX (ex: NSR1)"
+                           maxlength="4"
+                           value="{{ hangar.nsr_pin or '' }}"
+                           style="text-transform:uppercase">
+                    <button type="submit" class="btn-primary">
+                        {% if hangar.nsr_pin %}Changer{% else %}Assigner{% endif %}
+                    </button>
+                </form>
+                <p style="font-size:11px;color:var(--text-muted);margin-top:8px">
+                    Un NSR-BOX peut contrôler jusqu'à 3 hangars maximum.
+                </p>
+            </div>
+
+            <!-- ADD NS-EDGE -->
+            <div class="settings-panel">
+                <h4 style="margin-bottom:12px">📡 Ajouter un NS-Edge</h4>
+                {% if error and 'NSR' not in error %}<div class="auth-error" style="margin-bottom:10px">{{ error }}</div>{% endif %}
+                <form method="POST" action="/add_node/{{ hangar.id }}" class="add-node-form">
+                    <input type="text" name="pin" placeholder="PIN (ex: ED02)" maxlength="4" style="text-transform:uppercase">
+                    <button type="submit" class="btn-primary">Ajouter</button>
+                </form>
+                <p style="font-size:11px;color:var(--text-muted);margin-top:8px">
+                    Jusqu'à 10 capteurs NS-Edge par hangar.
+                </p>
+            </div>
+
+        </div>
     </div>
 
     <!-- EDGE CARDS -->
