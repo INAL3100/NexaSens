@@ -5,6 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Nexa Sens — Alertes</title>
     <link rel="stylesheet" href="/static/style.css">
+    <style>
+        /* Clickable status badge */
+        .status-clickable {
+            cursor: pointer;
+            border: none;
+            font-family: var(--font);
+            transition: opacity 0.15s;
+        }
+        .status-clickable:hover { opacity: 0.8; }
+        .status-clickable:disabled { cursor: wait; opacity: 0.5; }
+    </style>
 </head>
 <body>
 <header>
@@ -28,6 +39,9 @@
 
 <main>
     <h1 class="page-title">Alertes — {{ hangar_name }}</h1>
+    <p style="font-size:11px;color:var(--text-muted);margin-bottom:12px">
+        Cliquez sur un statut pour le changer (Non traité → En cours → Traité)
+    </p>
 
     {% if alerts %}
     <div class="table-container">
@@ -35,18 +49,17 @@
             <thead>
                 <tr>
                     <th>Date/Heure</th>
-                    <th>Capteur</th>
+                    <th>Hangar</th>
                     <th>Message</th>
                     <th>Niveau</th>
                     <th>Statut</th>
-                    <th>Action</th>
                 </tr>
             </thead>
             <tbody>
                 {% for a in alerts %}
                 <tr>
                     <td style="font-family:var(--mono);font-size:12px">{{ a.timestamp }}</td>
-                    <td><span class="node-name">{{ a.node_id }}</span></td>
+                    <td>{{ hangar_name }}</td>
                     <td>{{ a.message }}</td>
                     <td>
                         <span class="alert-status-badge
@@ -59,23 +72,15 @@
                         </span>
                     </td>
                     <td>
-                        <span class="alert-status-badge
-                            {% if a.status == 'Traité' %}status-ok
-                            {% elif a.status == 'Non traité' and a.level == 'critical' %}status-danger
-                            {% else %}status-warning{% endif %}">
+                        <button type="button"
+                                class="alert-status-badge status-clickable
+                                    {% if a.status == 'Traité' %}status-ok
+                                    {% elif a.status == 'Non traité' %}status-danger
+                                    {% else %}status-warning{% endif %}"
+                                data-alert-id="{{ a.id }}"
+                                data-current-status="{{ a.status }}">
                             {{ a.status }}
-                        </span>
-                    </td>
-                    <td>
-                        <form method="POST" action="/update_alert/{{ a.id }}" style="display:flex;gap:6px;align-items:center">
-                            <input type="hidden" name="hangar_id" value="{{ hangar_id }}">
-                            <select name="status" class="status-select">
-                                <option value="Non traité" {% if a.status == 'Non traité' %}selected{% endif %}>Non traité</option>
-                                <option value="En cours"   {% if a.status == 'En cours'   %}selected{% endif %}>En cours</option>
-                                <option value="Traité"     {% if a.status == 'Traité'     %}selected{% endif %}>Traité</option>
-                            </select>
-                            <button type="submit" class="btn-small">✓</button>
-                        </form>
+                        </button>
                     </td>
                 </tr>
                 {% endfor %}
@@ -86,5 +91,63 @@
     <div class="no-data"><p>✅ Aucune alerte enregistrée.</p></div>
     {% endif %}
 </main>
+
+<script>
+const HANGAR_ID = {{ hangar_id }};
+
+// Cycle: Non traité -> En cours -> Traité -> Non traité
+const CYCLE = {
+    'Non traité': 'En cours',
+    'En cours':   'Traité',
+    'Traité':     'Non traité'
+};
+const CLASS_FOR = {
+    'Non traité': 'status-danger',
+    'En cours':   'status-warning',
+    'Traité':     'status-ok'
+};
+
+document.querySelectorAll('.status-clickable').forEach(btn => {
+    btn.addEventListener('click', async function() {
+        if (this.disabled) return;
+        const alertId = this.dataset.alertId;
+        const current = this.dataset.currentStatus;
+        const next    = CYCLE[current] || 'Non traité';
+
+        this.disabled = true;
+        const oldText = this.textContent;
+        this.textContent = '...';
+
+        try {
+            const formData = new URLSearchParams();
+            formData.append('hangar_id', HANGAR_ID);
+            formData.append('status', next);
+
+            const res = await fetch(`/update_alert/${alertId}`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: formData
+            });
+
+            if (res.ok || res.redirected) {
+                // Success — update the badge in place
+                this.textContent = next;
+                this.dataset.currentStatus = next;
+                // Swap classes
+                this.classList.remove('status-danger', 'status-warning', 'status-ok');
+                this.classList.add(CLASS_FOR[next]);
+            } else {
+                this.textContent = oldText;
+                alert('Erreur lors de la mise à jour');
+            }
+        } catch (e) {
+            this.textContent = oldText;
+            alert('Erreur réseau: ' + e.message);
+        } finally {
+            this.disabled = false;
+        }
+    });
+});
+</script>
 </body>
 </html>
