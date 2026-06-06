@@ -24,6 +24,10 @@
 #
 # CHANGE: NS-Edge → NSR-BOX is now MQTT (matches memoir section 2.5.1).
 #         NSR-BOX → Cloud remains HTTP.
+#
+# PUSH 3: Fan and Ventilation now have clearly separated roles:
+#   - Fan (Ventilateur): cooling + dehumidification (high airflow)
+#   - Ventilation: air renewal for NH3 (low airflow, can run with heater)
 # ============================================================
 
 from flask import Flask, request, jsonify
@@ -122,7 +126,7 @@ def send_sms(message):
 threading.Thread(target=setup_gsm, daemon=True).start()
 
 # ============================================================
-# SMS COMMAND HANDLER (unchanged — exactly as before)
+# SMS COMMAND HANDLER
 # ============================================================
 
 EQUIPMENT_MAP = {
@@ -341,6 +345,11 @@ def get_hangar_for_pin(pin):
 
 # ============================================================
 # EQUIPMENT DECISION LOGIC (hysteresis) — per hangar
+#
+# Push 3: Fan and Ventilation now have clearly separated roles.
+#   - Fan (Ventilateur): cooling/dehumidification — responds to temp or humidity
+#   - Ventilation: NH3 air renewal — physically separate low-airflow device
+#                  can run alongside heater without significant heat loss
 # ============================================================
 
 def decide(temp, hum, nh3, t, hangar_id):
@@ -357,32 +366,46 @@ def decide(temp, hum, nh3, t, hangar_id):
     eq  = _equipment[hid_str]
 
     def resolve(name, on_cond, off_cond):
+        # Priority 1: farmer manual SMS override
         if eq[name] != "AUTO":
             return eq[name]
+        # Priority 2: dashboard override
         if ov.get(f"eq_{name}") in ("ON", "OFF"):
             return ov[f"eq_{name}"]
+        # Priority 3: AUTO hysteresis
         if on_cond:
             return "ON"
         if off_cond:
             return "OFF"
-        return prev[name]
+        return prev[name]  # dead band — keep previous
 
+    # Heater: cold protection
     heater = resolve("heater",
                      temp <= t["temp_min"],
                      temp >= t["temp_min"] + 1)
+
+    # Fan (Ventilateur): cooling + dehumidification
+    # High-airflow device — responds to temperature or humidity
     fan    = resolve("fan",
-                     temp >= t["temp_max"] or nh3 >= t["ammonia_max"],
-                     temp <= t["temp_max"] - 1 and nh3 <= t["ammonia_max"] - 1)
+                     temp >= t["temp_max"] or hum >= t["hum_max"],
+                     temp <= t["temp_max"] - 1 and hum <= t["hum_max"] - 2)
+
+    # Mister: humidify when dry, cool by evaporation when hot
     mister = resolve("mister",
                      hum <= t["hum_min"] or temp >= t["temp_max"],
                      hum >= t["hum_min"] + 2 and temp <= t["temp_max"] - 1)
+
+    # Ventilation: air renewal (NH3 removal)
+    # Low-airflow device — physically separate from fan,
+    # can run with heater without significant heat loss
     ventil = resolve("ventilation",
-                     hum >= t["hum_max"] - 2 or nh3 >= t["ammonia_max"] - 2,
-                     hum <= t["hum_max"] - 4 and nh3 <= t["ammonia_max"] - 4)
+                     nh3 >= t["ammonia_max"],
+                     nh3 <= t["ammonia_max"] - 2)
 
     decisions = {"fan": fan, "heater": heater, "mister": mister, "ventilation": ventil}
     _prev_decisions[hangar_id] = decisions
 
+    # Apply to relays only in AUTO mode
     for name, state in decisions.items():
         if eq[name] == "AUTO" and state in ("ON", "OFF"):
             set_relay(name, state)
@@ -468,7 +491,7 @@ def process_reading(pin, temp, humidity, ammonia):
     level, msg = check_alert(temp, humidity, ammonia, t, pin)
 
     print(f"[{timestamp}] {pin} T:{temp}°C H:{humidity}% NH3:{ammonia}ppm | "
-          f"Fan:{fan} Heat:{heater} | {level}")
+          f"Fan:{fan} Heat:{heater} Mist:{mister} Vent:{ventil} | {level}")
 
     conn = get_db()
     conn.execute(
