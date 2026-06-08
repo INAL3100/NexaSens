@@ -757,7 +757,16 @@ def receive():
         (hid, node_id, temp, humidity, ammonia,
          fan, heater, mister, ventil, level, msg, ts))
 
-    alert_type = _derive_alert_type(temp, humidity, ammonia, get_thresh(hid), level)
+    # Push 4 v2: trust the Pi's condition_type (authoritative source).
+    # Falls back to derived value for old payloads without the field.
+    pi_cond = data.get("condition_type")
+    if pi_cond and pi_cond != "normal":
+        alert_type = pi_cond
+    elif pi_cond == "normal":
+        alert_type = "normal"
+    else:
+        # Legacy fallback for older Pi versions
+        alert_type = _derive_alert_type(temp, humidity, ammonia, get_thresh(hid), level)
 
     nsr_row = query("SELECT nsr_pin FROM hangars WHERE id=?", (hid,), one=True)
     alert_source = nsr_row[0] if nsr_row and nsr_row[0] else node_id

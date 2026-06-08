@@ -64,8 +64,8 @@ MQTT_TOPIC    = "nexasens/edge/+/data"
 # ── ALERT LIFECYCLE TIMING (Push 4) ───────────────────────────
 # Both configurable via env vars so demo/testing can shorten them.
 # Production defaults: 600s escalation, 120s stability.
-ALERT_ESCALATION_SECONDS = int(os.environ.get("ALERT_ESCALATION_SECONDS", "600"))
-ALERT_STABILITY_SECONDS  = int(os.environ.get("ALERT_STABILITY_SECONDS",  "120"))
+ALERT_ESCALATION_SECONDS = int(os.environ.get("ALERT_ESCALATION_SECONDS", "90"))
+ALERT_STABILITY_SECONDS  = int(os.environ.get("ALERT_STABILITY_SECONDS",  "60"))
 
 # ── GSM MODEM ─────────────────────────────────────────────────
 GSM_ENABLED  = False
@@ -496,7 +496,10 @@ def _notify_critical(pin, msg):
 
 def check_alert(temp, hum, nh3, t, pin):
     """Decide the alert level for this reading, applying lifecycle rules.
-    Returns (level, msg). level ∈ {'log', 'en_traitement', 'critical'}."""
+    Returns (level, msg, condition_type).
+       level ∈ {'log', 'en_traitement', 'critical'}
+       condition_type ∈ {None, 'nh3', 'temp_high', 'temp_low', 'hum_high', 'hum_low'}
+    """
     now  = time.time()
     cond = _condition_type(temp, hum, nh3, t)
 
@@ -520,7 +523,7 @@ def check_alert(temp, hum, nh3, t, pin):
             if sev == "critical" and not state["sms_sent"]:
                 _notify_critical(pin, msg)
                 state["sms_sent"] = True
-            return sev, msg
+            return sev, msg, cond
 
         # Existing tracker — recovering condition resumed, cancel stability counter
         state["stable_since"] = None
@@ -529,29 +532,23 @@ def check_alert(temp, hum, nh3, t, pin):
         # Did it reach extreme severity (instant critical) or has escalation time elapsed?
         elapsed = now - state["opened_at"]
         if sev == "critical" or elapsed >= ALERT_ESCALATION_SECONDS:
-            # If the timer escalated us (but the value itself isn't extreme yet),
-            # upgrade the message to a "non résolu" critical phrasing so the
-            # farmer's SMS reflects that the situation persists, not just that
-            # it's elevated.
             if sev != "critical":
-                msg = msg.replace("⚠️", "🚨") + " — non résolu après 10min"
+                msg = msg.replace("⚠️", "🚨") + f" — non résolu après {ALERT_ESCALATION_SECONDS}s"
             state["last_level"] = "critical"
             state["last_msg"]   = msg
             if not state["sms_sent"]:
                 _notify_critical(pin, msg)
                 state["sms_sent"] = True
-            return "critical", msg
+            return "critical", msg, cond
         else:
             state["last_level"] = "en_traitement"
-            return "en_traitement", msg
+            return "en_traitement", msg, cond
 
     # ── Case B: condition is currently normal ────────────────────
-    # Look at every open condition for this pin and decide what to emit.
     open_states = [(k, v) for k, v in _alert_state.items() if k[0] == pin]
     if not open_states:
-        return "log", "Normal"
+        return "log", "Normal", None
 
-    # Use the highest-severity remaining open condition for display
     LEVEL_ORDER = {"critical": 2, "en_traitement": 1, "log": 0}
     open_states.sort(key=lambda kv: LEVEL_ORDER.get(kv[1]["last_level"], 0), reverse=True)
 
@@ -562,22 +559,20 @@ def check_alert(temp, hum, nh3, t, pin):
             state["stable_since"] = now
         elapsed_stable = now - state["stable_since"]
         if elapsed_stable >= ALERT_STABILITY_SECONDS:
-            # 2 min stable → this condition is truly resolved
             del _alert_state[key]
         else:
             any_still_pending = True
 
     if not any_still_pending:
-        return "log", "Normal"
+        return "log", "Normal", None
 
-    # At least one condition is still in stability window — keep showing its level
-    # (use the highest-severity remaining one)
     remaining = [(k, v) for k, v in _alert_state.items() if k[0] == pin]
     if not remaining:
-        return "log", "Normal"
+        return "log", "Normal", None
     remaining.sort(key=lambda kv: LEVEL_ORDER.get(kv[1]["last_level"], 0), reverse=True)
-    top = remaining[0][1]
-    return top["last_level"], top["last_msg"]
+    top_key, top_state = remaining[0]
+    # Return the condition name from the key so cloud knows which condition this alert is about
+    return top_state["last_level"], top_state["last_msg"], top_key[1]
 
 # ============================================================
 # CORE READING PROCESSOR
@@ -608,10 +603,11 @@ def process_reading(pin, temp, humidity, ammonia):
 
     fan, heater, mister, ventil = decide(
         temp, humidity, ammonia, t, hangar_id or 0)
-    level, msg = check_alert(temp, humidity, ammonia, t, pin)
+    level, msg, cond_type = check_alert(temp, humidity, ammonia, t, pin)
 
     print(f"[{timestamp}] {pin} T:{temp}°C H:{humidity}% NH3:{ammonia}ppm | "
-          f"Fan:{fan} Heat:{heater} Mist:{mister} Vent:{ventil} | {level}")
+          f"Fan:{fan} Heat:{heater} Mist:{mister} Vent:{ventil} | {level}"
+          f"{' [' + cond_type + ']' if cond_type else ''}")
 
     conn = get_db()
     conn.execute(
@@ -626,7 +622,9 @@ def process_reading(pin, temp, humidity, ammonia):
     payload = {
         "pin": pin, "temperature": temp, "humidity": humidity, "ammonia": ammonia,
         "fan": fan, "heater": heater, "mister": mister, "ventilation": ventil,
-        "alert_level": level, "alert": msg, "timestamp": timestamp
+        "alert_level": level, "alert": msg,
+        "condition_type": cond_type or "normal",   # Push 4 v2: Pi tells cloud the authoritative condition
+        "timestamp": timestamp
     }
 
     if not forward_to_cloud(payload):
