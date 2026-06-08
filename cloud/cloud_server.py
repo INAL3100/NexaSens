@@ -772,55 +772,71 @@ def receive():
     alert_source = nsr_row[0] if nsr_row and nsr_row[0] else node_id
     msg_full = msg  # Push 1: no [capteur ED01] suffix
 
-    # ── Treat both "en_traitement" and legacy "notify" as the same state ─
+    # ── Push 5: Pi controls BOTH alert_level AND status ─────────────────
+    # The cloud just writes what the Pi tells it. No autonomous decisions.
+
+    pi_status = data.get("alert_status")  # None | 'En cours' | 'Non traité' | 'Traité'
+
     if level in ("en_traitement", "notify"):
+        # Find any open alert for this hangar+condition (regardless of current status)
         existing = query(
             """SELECT id FROM alerts
-               WHERE hangar_id=? AND node_id=? AND alert_type=?
+               WHERE hangar_id=? AND alert_type=?
                  AND level IN ('en_traitement','notify')
                  AND status IN ('En cours','Non traité')""",
-            (hid, alert_source, alert_type), one=True)
+            (hid, alert_type), one=True)
         if not existing:
             execute(
                 """INSERT INTO alerts
                    (hangar_id, node_id, message, alert_type, level, status, timestamp)
-                   VALUES (?,?,?,?,'en_traitement','En cours',?)""",
-                (hid, alert_source, msg_full, alert_type, ts))
+                   VALUES (?,?,?,?,'en_traitement',?,?)""",
+                (hid, alert_source, msg_full, alert_type, pi_status or "En cours", ts))
         else:
-            # Update message to reflect latest value
-            execute(
-                """UPDATE alerts SET message=? WHERE id=?""",
-                (msg_full, existing[0]))
+            # Just refresh the message + status the Pi sent
+            if pi_status:
+                execute(
+                    """UPDATE alerts SET message=?, status=? WHERE id=?""",
+                    (msg_full, pi_status, existing[0]))
+            else:
+                execute(
+                    """UPDATE alerts SET message=? WHERE id=?""",
+                    (msg_full, existing[0]))
 
     elif level == "critical":
-        # Promote any open en_traitement / notify for this condition to critical
+        # Promote any open en_traitement/notify for this condition to critical.
+        # Use Pi's status (typically 'Non traité' on escalation).
+        new_status = pi_status or "Non traité"
         execute(
             """UPDATE alerts
-                  SET level='critical', status='Non traité', message=?
-                WHERE hangar_id=? AND node_id=? AND alert_type=?
+                  SET level='critical', status=?, message=?
+                WHERE hangar_id=? AND alert_type=?
                   AND level IN ('en_traitement','notify')
                   AND status IN ('En cours','Non traité')""",
-            (msg_full, hid, alert_source, alert_type))
-        # If no open one existed, insert a new critical row
+            (new_status, msg_full, hid, alert_type))
         if not query(
                 """SELECT id FROM alerts
-                   WHERE hangar_id=? AND node_id=? AND alert_type=?
-                     AND level='critical' AND status='Non traité'""",
-                (hid, alert_source, alert_type), one=True):
+                   WHERE hangar_id=? AND alert_type=?
+                     AND level='critical' AND status IN ('En cours','Non traité')""",
+                (hid, alert_type), one=True):
             execute(
                 """INSERT INTO alerts
                    (hangar_id, node_id, message, alert_type, level, status, timestamp)
-                   VALUES (?,?,?,?,'critical','Non traité',?)""",
-                (hid, alert_source, msg_full, alert_type, ts))
+                   VALUES (?,?,?,?,'critical',?,?)""",
+                (hid, alert_source, msg_full, alert_type, new_status, ts))
 
     elif level == "log":
-        # Pi confirms condition cleared (after 2-min stability) → resolve all open alerts
+        # Cloud does NOT auto-close. The Pi sends a separate alert_status='Traité'
+        # in the SAME payload when the stability window finishes.
+        pass
+
+    # Push 5: handle Pi's explicit 'Traité' status — mark all open alerts for this hangar.
+    if pi_status == "Traité":
         execute(
             """UPDATE alerts SET status='Traité'
-               WHERE hangar_id=? AND node_id=?
+               WHERE hangar_id=?
                  AND status IN ('En cours','Non traité')
                  AND level IN ('en_traitement','notify','critical')""",
-            (hid, alert_source))
+            (hid,))
 
     return jsonify({"ok": True, "node_id": node_id, "hangar_id": hid}), 200
 

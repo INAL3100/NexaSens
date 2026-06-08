@@ -40,7 +40,8 @@ NODES = [
     {"node_id": "ED02", "temp_base": 27.5, "hum_base": 62.0, "nh3_base": 9.0},
 ]
 
-ABNORMAL_TEMP_OFFSET = 4.0   # +4°C above base → safely above threshold for week 3
+ABNORMAL_TEMP_OFFSET = 2.5   # +2.5°C above base = 29.5°C — above week-3 max (29) but
+                             # NOT extreme (< max+2 = 31) → triggers the 90s timer
 
 # ── MQTT CLIENT ───────────────────────────────────────────────
 def make_client():

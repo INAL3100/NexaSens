@@ -485,32 +485,74 @@ def _severity(temp, hum, nh3, t, cond):
     return "log", "Normal"
 
 # Per-(pin, cond) tracker
-_alert_state = {}   # key: (pin, cond) → dict with opened_at, last_level, last_msg, stable_since, sms_sent
+# Per-pin latest reading: {pin: (temp, hum, nh3, hangar_id)}
+# Used to compute the HANGAR-LEVEL average for alert decisions.
+_pin_latest = {}
 
-def _notify_critical(pin, msg):
-    """Send SMS + silent call. Called once per (pin, cond) when escalating."""
-    full = f"Nexa Sens [{pin}] {msg}"
+# Per-(hangar_id, cond) tracker
+_alert_state = {}   # key: (hangar_id, cond) → dict with opened_at, last_level, last_msg, stable_since, sms_sent
+
+def _notify_critical(hangar_id, msg):
+    """Send SMS + silent call. Called once per (hangar, cond) when escalating."""
+    full = f"Nexa Sens [H{hangar_id}] {msg}"
     send_sms(full)
-    # Silent call right after — make sure farmer wakes up
     threading.Thread(target=make_silent_call, daemon=True).start()
 
-def check_alert(temp, hum, nh3, t, pin):
-    """Decide the alert level for this reading, applying lifecycle rules.
-    Returns (level, msg, condition_type).
-       level ∈ {'log', 'en_traitement', 'critical'}
-       condition_type ∈ {None, 'nh3', 'temp_high', 'temp_low', 'hum_high', 'hum_low'}
-    """
-    now  = time.time()
-    cond = _condition_type(temp, hum, nh3, t)
+def _hangar_avg(hangar_id):
+    """Average temp/hum/nh3 across all known pins in this hangar.
+    Returns (avg_t, avg_h, avg_n) or None if no readings yet."""
+    pins = [v for v in _pin_latest.values() if v[3] == hangar_id]
+    if not pins:
+        return None
+    n = len(pins)
+    t = sum(v[0] for v in pins) / n
+    h = sum(v[1] for v in pins) / n
+    a = sum(v[2] for v in pins) / n
+    return t, h, a
 
-    # ── Case A: condition is currently abnormal ──────────────────
+# Track which hangars have an alert currently "resolved" — used so we only
+# emit status='Traité' ONCE per clear cycle, not on every subsequent log reading.
+_resolved_announced = set()
+
+def check_alert(temp, hum, nh3, t, pin, hangar_id):
+    """Decide level + status using HANGAR-LEVEL averages.
+
+    Returns (level, msg, condition_type, status).
+       level    ∈ {'log', 'en_traitement', 'critical'}
+       status   ∈ {None, 'En cours', 'Non traité', 'Traité'}
+       cond     ∈ {None, 'nh3', 'temp_high', 'temp_low', 'hum_high', 'hum_low'}
+
+    The Pi controls BOTH alert_level AND status. The cloud just writes them.
+    Status mapping:
+      - en_traitement → 'En cours'  (system is working on it)
+      - critical      → 'Non traité' (Pi couldn't fix it, farmer needed)
+      - resolved      → 'Traité' (sent ONCE when alert fully clears)
+    """
+    now = time.time()
+
+    # 1. Update per-pin buffer
+    _pin_latest[pin] = (temp, hum, nh3, hangar_id)
+
+    # 2. Compute hangar averages
+    avg = _hangar_avg(hangar_id)
+    if avg is None:
+        return "log", "Normal", None, None
+    avg_t, avg_h, avg_n = avg
+
+    # 3. What's the active condition at hangar level?
+    cond = _condition_type(avg_t, avg_h, avg_n, t)
+
+    LEVEL_ORDER = {"critical": 2, "en_traitement": 1, "log": 0}
+
+    # ── Case A: hangar avg is abnormal ───────────────────────────
     if cond is not None:
-        key      = (pin, cond)
-        state    = _alert_state.get(key)
-        sev, msg = _severity(temp, hum, nh3, t, cond)
+        _resolved_announced.discard(hangar_id)
+        key   = (hangar_id, cond)
+        state = _alert_state.get(key)
+        sev, msg = _severity(avg_t, avg_h, avg_n, t, cond)
 
         if state is None:
-            # New abnormality — start tracking, emit en_traitement (or critical if extreme)
+            # New abnormality opens
             state = {
                 "opened_at":    now,
                 "last_level":   sev,
@@ -519,42 +561,38 @@ def check_alert(temp, hum, nh3, t, pin):
                 "sms_sent":     False
             }
             _alert_state[key] = state
-            # Immediate critical (e.g. temp jumps to +2 instantly) → notify right away
             if sev == "critical" and not state["sms_sent"]:
-                _notify_critical(pin, msg)
+                _notify_critical(hangar_id, msg)
                 state["sms_sent"] = True
-            return sev, msg, cond
+            status = "Non traité" if sev == "critical" else "En cours"
+            return sev, msg, cond, status
 
-        # Existing tracker — recovering condition resumed, cancel stability counter
+        # Existing tracker, condition still abnormal
         state["stable_since"] = None
         state["last_msg"]     = msg
-
-        # Did it reach extreme severity (instant critical) or has escalation time elapsed?
         elapsed = now - state["opened_at"]
-        if sev == "critical" or elapsed >= ALERT_ESCALATION_SECONDS:
-            if sev != "critical":
+        already_critical = (state["last_level"] == "critical")
+        if sev == "critical" or elapsed >= ALERT_ESCALATION_SECONDS or already_critical:
+            if sev != "critical" and not already_critical:
                 msg = msg.replace("⚠️", "🚨") + f" — non résolu après {ALERT_ESCALATION_SECONDS}s"
             state["last_level"] = "critical"
             state["last_msg"]   = msg
             if not state["sms_sent"]:
-                _notify_critical(pin, msg)
+                _notify_critical(hangar_id, msg)
                 state["sms_sent"] = True
-            return "critical", msg, cond
+            return "critical", msg, cond, "Non traité"
         else:
             state["last_level"] = "en_traitement"
-            return "en_traitement", msg, cond
+            return "en_traitement", msg, cond, "En cours"
 
-    # ── Case B: condition is currently normal ────────────────────
-    open_states = [(k, v) for k, v in _alert_state.items() if k[0] == pin]
-    if not open_states:
-        return "log", "Normal", None
+    # ── Case B: hangar avg is normal ─────────────────────────────
+    open_for_hangar = [(k, v) for k, v in _alert_state.items() if k[0] == hangar_id]
+    if not open_for_hangar:
+        return "log", "Normal", None, None
 
-    LEVEL_ORDER = {"critical": 2, "en_traitement": 1, "log": 0}
-    open_states.sort(key=lambda kv: LEVEL_ORDER.get(kv[1]["last_level"], 0), reverse=True)
-
-    # Walk each open condition and update its stability tracker
+    # Update stability counters
     any_still_pending = False
-    for key, state in list(open_states):
+    for key, state in list(open_for_hangar):
         if state["stable_since"] is None:
             state["stable_since"] = now
         elapsed_stable = now - state["stable_since"]
@@ -563,16 +601,20 @@ def check_alert(temp, hum, nh3, t, pin):
         else:
             any_still_pending = True
 
-    if not any_still_pending:
-        return "log", "Normal", None
+    if any_still_pending:
+        # Still in stability window — keep showing the dominant condition's level
+        remaining = [(k, v) for k, v in _alert_state.items() if k[0] == hangar_id]
+        remaining.sort(key=lambda kv: LEVEL_ORDER.get(kv[1]["last_level"], 0), reverse=True)
+        top_key, top_state = remaining[0]
+        # While stabilizing, keep current status (don't update it)
+        keep_status = "Non traité" if top_state["last_level"] == "critical" else "En cours"
+        return top_state["last_level"], top_state["last_msg"], top_key[1], keep_status
 
-    remaining = [(k, v) for k, v in _alert_state.items() if k[0] == pin]
-    if not remaining:
-        return "log", "Normal", None
-    remaining.sort(key=lambda kv: LEVEL_ORDER.get(kv[1]["last_level"], 0), reverse=True)
-    top_key, top_state = remaining[0]
-    # Return the condition name from the key so cloud knows which condition this alert is about
-    return top_state["last_level"], top_state["last_msg"], top_key[1]
+    # All conditions fully cleared — send status='Traité' ONCE
+    if hangar_id not in _resolved_announced:
+        _resolved_announced.add(hangar_id)
+        return "log", "Normal", None, "Traité"
+    return "log", "Normal", None, None
 
 # ============================================================
 # CORE READING PROCESSOR
@@ -603,11 +645,13 @@ def process_reading(pin, temp, humidity, ammonia):
 
     fan, heater, mister, ventil = decide(
         temp, humidity, ammonia, t, hangar_id or 0)
-    level, msg, cond_type = check_alert(temp, humidity, ammonia, t, pin)
+    level, msg, cond_type, status = check_alert(
+        temp, humidity, ammonia, t, pin, hangar_id or 0)
 
     print(f"[{timestamp}] {pin} T:{temp}°C H:{humidity}% NH3:{ammonia}ppm | "
           f"Fan:{fan} Heat:{heater} Mist:{mister} Vent:{ventil} | {level}"
-          f"{' [' + cond_type + ']' if cond_type else ''}")
+          f"{' [' + cond_type + ']' if cond_type else ''}"
+          f"{' status=' + status if status else ''}")
 
     conn = get_db()
     conn.execute(
@@ -622,9 +666,11 @@ def process_reading(pin, temp, humidity, ammonia):
     payload = {
         "pin": pin, "temperature": temp, "humidity": humidity, "ammonia": ammonia,
         "fan": fan, "heater": heater, "mister": mister, "ventilation": ventil,
-        "alert_level": level, "alert": msg,
-        "condition_type": cond_type or "normal",   # Push 4 v2: Pi tells cloud the authoritative condition
-        "timestamp": timestamp
+        "alert_level":    level,
+        "alert":          msg,
+        "condition_type": cond_type or "normal",
+        "alert_status":   status,                # None | 'En cours' | 'Non traité' | 'Traité'
+        "timestamp":      timestamp
     }
 
     if not forward_to_cloud(payload):
