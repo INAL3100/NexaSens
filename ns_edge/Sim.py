@@ -70,11 +70,12 @@ def emit_all_normal(client):
         publish(client, n["node_id"], t, h, a)
 
 def emit_all_with_subject_abnormal(client):
+    # In a real failure (heater stuck, ventilation off, etc.) the whole
+    # hangar gets affected — not just one sensor. So during abnormal phases
+    # ALL nodes shift up together. This makes the hangar AVERAGE cross
+    # the threshold, which is what the Pi now uses for decisions.
     for n in NODES:
-        if n["node_id"] == SUBJECT_NODE:
-            t = n["temp_base"] + ABNORMAL_TEMP_OFFSET + random.uniform(-0.2, 0.2)
-        else:
-            t = n["temp_base"] + random.uniform(-0.3, 0.3)
+        t = n["temp_base"] + ABNORMAL_TEMP_OFFSET + random.uniform(-0.2, 0.2)
         h = n["hum_base"] + random.uniform(-1.0, 1.0)
         a = n["nh3_base"] + random.uniform(-0.5, 0.5)
         publish(client, n["node_id"], t, h, a)
