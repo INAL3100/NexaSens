@@ -826,7 +826,7 @@ def receive():
         existing = query(
             """SELECT id FROM alerts
                WHERE hangar_id=? AND alert_type=?
-                 AND level IN ('attention',)
+                 AND level = 'attention'
                  AND status IN ('En traitement','Non traité')""",
             (hid, alert_type), one=True)
         if not existing:
@@ -854,7 +854,7 @@ def receive():
             """UPDATE alerts
                   SET level='critique', status=?, message=?
                 WHERE hangar_id=? AND alert_type=?
-                  AND level IN ('attention',)
+                  AND level = 'attention'
                   AND status IN ('En traitement','Non traité')""",
             (new_status, msg_full, hid, alert_type))
         if not query(
