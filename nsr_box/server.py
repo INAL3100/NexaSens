@@ -498,6 +498,16 @@ def _notify_critical(hangar_id, msg):
     send_sms(full)
     threading.Thread(target=make_silent_call, daemon=True).start()
 
+def _edge_level(temp, hum, nh3, t):
+    """Push 6: per-edge alert classification based on THIS reading's values only.
+    Used purely for history display, not for the hangar alert lifecycle.
+    Returns 'log' | 'en_traitement' | 'critical'."""
+    cond = _condition_type(temp, hum, nh3, t)
+    if cond is None:
+        return "log"
+    sev, _msg = _severity(temp, hum, nh3, t, cond)
+    return sev   # 'en_traitement' or 'critical'
+
 def _hangar_avg(hangar_id):
     """Average temp/hum/nh3 across all known pins in this hangar.
     Returns (avg_t, avg_h, avg_n) or None if no readings yet."""
@@ -636,22 +646,45 @@ def process_reading(pin, temp, humidity, ammonia):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     _edge_last_seen[pin] = timestamp
 
+    just_reconnected = False
     if pin in _edge_offline_alerted:
         _edge_offline_alerted.discard(pin)
         send_sms(f"✅ Capteur reconnecté: {pin}")
+        just_reconnected = True
 
     hangar_id = get_hangar_for_pin(pin)
     t         = get_thresh(hangar_id) if hangar_id else THRESHOLDS[1]
+
+    # Push 6: if this edge JUST reconnected, send a separate payload that closes
+    # its specific offline alert. We don't touch any other alert.
+    if just_reconnected and hangar_id:
+        forward_to_cloud({
+            "pin": pin,
+            "temperature": None, "humidity": None, "ammonia": None,
+            "fan": None, "heater": None, "mister": None, "ventilation": None,
+            "alert_level":      "log",
+            "alert":            f"Capteur reconnecté: {pin}",
+            "condition_type":   f"offline_{pin}",
+            "alert_status":     "Traité",
+            "edge_alert_level": "log",
+            "edge_status":      "online",
+            "timestamp":        timestamp
+        })
 
     fan, heater, mister, ventil = decide(
         temp, humidity, ammonia, t, hangar_id or 0)
     level, msg, cond_type, status = check_alert(
         temp, humidity, ammonia, t, pin, hangar_id or 0)
 
+    # Push 6: per-edge alert level — simple value-vs-threshold check for THIS edge only.
+    # Used only for the history display, not for the hangar alert lifecycle.
+    edge_lvl = _edge_level(temp, humidity, ammonia, t)
+
     print(f"[{timestamp}] {pin} T:{temp}°C H:{humidity}% NH3:{ammonia}ppm | "
           f"Fan:{fan} Heat:{heater} Mist:{mister} Vent:{ventil} | {level}"
           f"{' [' + cond_type + ']' if cond_type else ''}"
-          f"{' status=' + status if status else ''}")
+          f"{' status=' + status if status else ''}"
+          f"{' edge=' + edge_lvl if edge_lvl != 'log' else ''}")
 
     conn = get_db()
     conn.execute(
@@ -668,6 +701,8 @@ def process_reading(pin, temp, humidity, ammonia):
         "fan": fan, "heater": heater, "mister": mister, "ventilation": ventil,
         "alert_level":    level,
         "alert":          msg,
+        "edge_alert_level": edge_lvl,
+        "edge_status":      "online",
         "condition_type": cond_type or "normal",
         "alert_status":   status,                # None | 'En cours' | 'Non traité' | 'Traité'
         "timestamp":      timestamp
@@ -817,14 +852,22 @@ def edge_watchdog():
                         send_sms(f"⚠️ Capteur hors ligne: {pin}")
                         hid = get_hangar_for_pin(pin)
                         if hid:
+                            # Push 6: ONE offline marker row per edge.
+                            # Use unique condition_type=f"offline_{pin}" so each
+                            # edge gets its own alert row in the cloud (no dedup
+                            # collisions), and the alert can be closed individually
+                            # on reconnect.
                             forward_to_cloud({
                                 "pin": pin,
-                                "temperature": 0, "humidity": 0, "ammonia": 0,
-                                "fan": "OFF", "heater": "OFF",
-                                "mister": "OFF", "ventilation": "OFF",
-                                "alert_level": "critical",
-                                "alert": f"Capteur hors ligne: {pin}",
-                                "timestamp": ts
+                                "temperature": None, "humidity": None, "ammonia": None,
+                                "fan": None, "heater": None, "mister": None, "ventilation": None,
+                                "alert_level":      "critical",
+                                "alert":            f"Capteur hors ligne: {pin}",
+                                "condition_type":   f"offline_{pin}",
+                                "alert_status":     "Non traité",
+                                "edge_alert_level": "critical",
+                                "edge_status":      "offline",
+                                "timestamp":        ts
                             })
         except Exception as e:
             print(f"[EDGE WATCHDOG] {e}")

@@ -130,7 +130,18 @@ def init_db():
         ventilation TEXT,
         alert_level TEXT DEFAULT 'log',
         alert       TEXT,
+        edge_alert_level TEXT DEFAULT 'log',
+        edge_status TEXT DEFAULT 'online',
         timestamp   TEXT)""")
+    # Push 6: add columns if they don't exist (for existing DBs)
+    for col, decl in [
+        ("edge_alert_level", "TEXT DEFAULT 'log'"),
+        ("edge_status",      "TEXT DEFAULT 'online'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE readings ADD COLUMN {col} {decl}")
+        except sqlite3.OperationalError:
+            pass  # already exists
     conn.execute("""CREATE TABLE IF NOT EXISTS alerts (
         id         INTEGER PRIMARY KEY AUTOINCREMENT,
         hangar_id  INTEGER,
@@ -392,7 +403,7 @@ def _build_hangar_summaries(uid, master_pin):
                 """SELECT temperature, humidity, ammonia,
                           fan, heater, mister, ventilation, alert_level
                    FROM readings
-                   WHERE node_id=? AND hangar_id=?
+                   WHERE node_id=? AND hangar_id=? AND temperature IS NOT NULL
                    ORDER BY id DESC LIMIT 1""",
                 (nid, hid), one=True)
             if row:
@@ -402,9 +413,18 @@ def _build_hangar_summaries(uid, master_pin):
             at = round(sum(v[0] for v in vals) / len(vals), 1)
             ah = round(sum(v[1] for v in vals) / len(vals), 1)
             an = round(sum(v[2] for v in vals) / len(vals), 1)
-            # Push 4: order includes en_traitement between log and critical
-            level_order = {"critical": 3, "en_traitement": 2, "notify": 2, "log": 0}
-            al = max((v[7] for v in vals), key=lambda x: level_order.get(x, 0))
+            # Push 6: alert_level from open alerts table (source of truth)
+            open_alerts = query(
+                """SELECT level FROM alerts
+                   WHERE hangar_id=? AND status IN ('En cours','Non traité')
+                     AND level IN ('en_traitement','notify','critical')""",
+                (hid,))
+            if open_alerts:
+                level_order = {"critical": 3, "en_traitement": 2, "notify": 2, "log": 0}
+                al = max((r[0] for r in open_alerts),
+                         key=lambda x: level_order.get(x, 0))
+            else:
+                al = "log"
             eq_row = query(
                 "SELECT eq_fan, eq_heater, eq_mister, eq_ventilation FROM hangars WHERE id=?",
                 (hid,), one=True)
@@ -472,7 +492,7 @@ def hangar_page(hid):
         row     = query(
             """SELECT temperature, humidity, ammonia, timestamp, alert_level
                FROM readings
-               WHERE node_id=? AND hangar_id=?
+               WHERE node_id=? AND hangar_id=? AND temperature IS NOT NULL
                ORDER BY id DESC LIMIT 1""",
             (node_id, hid), one=True)
         al = "log"
@@ -495,11 +515,20 @@ def hangar_page(hid):
         at = round(sum(n["temperature"] for n in active) / len(active), 1)
         ah = round(sum(n["humidity"]    for n in active) / len(active), 1)
         an = round(sum(n["ammonia"]     for n in active) / len(active), 1)
-        # Push 4: en_traitement ranks above log/notify but below critical
-        level_order = {"critical": 3, "en_traitement": 2, "notify": 2, "log": 0}
-        al = max(
-            (n["alert_level"] for n in active),
-            key=lambda x: level_order.get(x, 0))
+
+        # Push 6: NSR bar alert_level comes from the alerts TABLE (source of truth),
+        # not from individual reading rows which may be stale.
+        open_alerts = query(
+            """SELECT level FROM alerts
+               WHERE hangar_id=? AND status IN ('En cours','Non traité')
+                 AND level IN ('en_traitement','notify','critical')""",
+            (hid,))
+        if open_alerts:
+            level_order = {"critical": 3, "en_traitement": 2, "notify": 2, "log": 0}
+            al = max((r[0] for r in open_alerts),
+                     key=lambda x: level_order.get(x, 0))
+        else:
+            al = "log"
 
         last_reading = query(
             """SELECT fan, heater, mister, ventilation FROM readings
@@ -724,10 +753,14 @@ def receive():
         return jsonify({"error": "No data"}), 400
 
     try:
-        temp     = float(data["temperature"])
-        humidity = float(data["humidity"])
-        ammonia  = float(data["ammonia"])
-    except (KeyError, ValueError):
+        # Push 6: temperature/humidity/ammonia may be None for offline-marker rows
+        t_raw = data.get("temperature")
+        h_raw = data.get("humidity")
+        a_raw = data.get("ammonia")
+        temp     = float(t_raw) if t_raw is not None else None
+        humidity = float(h_raw) if h_raw is not None else None
+        ammonia  = float(a_raw) if a_raw is not None else None
+    except (ValueError, TypeError):
         return jsonify({"error": "Données invalides"}), 400
 
     pin = data.get("pin", "").upper().strip()
@@ -742,20 +775,24 @@ def receive():
 
     execute("UPDATE nodes SET last_seen=? WHERE pin=?", (ts, pin))
 
-    fan    = data.get("fan",         "OFF")
-    heater = data.get("heater",      "OFF")
-    mister = data.get("mister",      "OFF")
-    ventil = data.get("ventilation", "OFF")
+    fan    = data.get("fan")    or "OFF"
+    heater = data.get("heater") or "OFF"
+    mister = data.get("mister") or "OFF"
+    ventil = data.get("ventilation") or "OFF"
     level  = data.get("alert_level", "log")
     msg    = data.get("alert",       "Normal")
+    edge_lvl = data.get("edge_alert_level", "log")
+    edge_st  = data.get("edge_status",      "online")
 
     execute(
         """INSERT INTO readings
            (hangar_id, node_id, temperature, humidity, ammonia,
-            fan, heater, mister, ventilation, alert_level, alert, timestamp)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            fan, heater, mister, ventilation, alert_level, alert,
+            edge_alert_level, edge_status, timestamp)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (hid, node_id, temp, humidity, ammonia,
-         fan, heater, mister, ventil, level, msg, ts))
+         fan, heater, mister, ventil, level, msg,
+         edge_lvl, edge_st, ts))
 
     # Push 4 v2: trust the Pi's condition_type (authoritative source).
     # Falls back to derived value for old payloads without the field.
@@ -829,14 +866,28 @@ def receive():
         # in the SAME payload when the stability window finishes.
         pass
 
-    # Push 5: handle Pi's explicit 'Traité' status — mark all open alerts for this hangar.
+    # Push 6: handle Pi's explicit 'Traité' status.
+    # - If condition_type is given (e.g. 'offline_ED01' or 'temp_high'), close only
+    #   alerts matching that exact alert_type.
+    # - Otherwise (legacy hangar-wide resolution): close all condition-based alerts
+    #   for this hangar but DO NOT close 'offline_*' alerts (those are managed
+    #   per-edge by the watchdog and have their own close signal).
     if pi_status == "Traité":
-        execute(
-            """UPDATE alerts SET status='Traité'
-               WHERE hangar_id=?
-                 AND status IN ('En cours','Non traité')
-                 AND level IN ('en_traitement','notify','critical')""",
-            (hid,))
+        if pi_cond and pi_cond != "normal":
+            execute(
+                """UPDATE alerts SET status='Traité'
+                   WHERE hangar_id=? AND alert_type=?
+                     AND status IN ('En cours','Non traité')
+                     AND level IN ('en_traitement','notify','critical')""",
+                (hid, pi_cond))
+        else:
+            execute(
+                """UPDATE alerts SET status='Traité'
+                   WHERE hangar_id=?
+                     AND status IN ('En cours','Non traité')
+                     AND level IN ('en_traitement','notify','critical')
+                     AND alert_type NOT LIKE 'offline_%'""",
+                (hid,))
 
     return jsonify({"ok": True, "node_id": node_id, "hangar_id": hid}), 200
 
@@ -917,11 +968,13 @@ def history(hid):
         readings = [
             {"temperature": r[0], "humidity": r[1], "ammonia": r[2],
              "fan": r[3], "heater": r[4], "mister": r[5], "ventilation": r[6],
-             "alert_level": r[7], "alert": r[8], "timestamp": r[9]}
+             "alert_level": r[7], "alert": r[8], "timestamp": r[9],
+             "edge_alert_level": r[10] or "log", "edge_status": r[11] or "online"}
             for r in query(
                 """SELECT temperature, humidity, ammonia,
                           fan, heater, mister, ventilation,
-                          alert_level, alert, timestamp
+                          alert_level, alert, timestamp,
+                          edge_alert_level, edge_status
                    FROM readings
                    WHERE hangar_id=? AND node_id=? AND DATE(timestamp)=?
                    ORDER BY timestamp ASC""",

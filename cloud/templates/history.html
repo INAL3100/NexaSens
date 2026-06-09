@@ -60,25 +60,40 @@
                     <th>Chauffage</th>
                     <th>Brumisateur</th>
                     <th>Statut</th>
+                    <th>Niveau alerte</th>
                 </tr>
             </thead>
             <tbody>
                 {% for r in readings %}
+                {% set is_offline = r.edge_status == 'offline' or r.temperature is none %}
                 <tr>
                     <td style="font-family:var(--mono);font-size:12px">{{ r.timestamp[11:19] }}</td>
-                    <td>{{ r.temperature }}°C</td>
-                    <td>{{ r.humidity }}%</td>
-                    <td>{{ r.ammonia }} ppm</td>
-                    <td class="{% if r.fan == 'ON' %}cell-on{% else %}cell-off{% endif %}">{{ r.fan }}</td>
-                    <td class="{% if r.heater == 'ON' %}cell-on{% else %}cell-off{% endif %}">{{ r.heater }}</td>
-                    <td class="{% if r.mister == 'ON' %}cell-on{% else %}cell-off{% endif %}">{{ r.mister }}</td>
+                    <td>{% if is_offline %}—{% else %}{{ r.temperature }}°C{% endif %}</td>
+                    <td>{% if is_offline %}—{% else %}{{ r.humidity }}%{% endif %}</td>
+                    <td>{% if is_offline %}—{% else %}{{ r.ammonia }} ppm{% endif %}</td>
+                    <td class="{% if r.fan == 'ON' %}cell-on{% else %}cell-off{% endif %}">
+                        {% if is_offline %}—{% else %}{{ r.fan }}{% endif %}
+                    </td>
+                    <td class="{% if r.heater == 'ON' %}cell-on{% else %}cell-off{% endif %}">
+                        {% if is_offline %}—{% else %}{{ r.heater }}{% endif %}
+                    </td>
+                    <td class="{% if r.mister == 'ON' %}cell-on{% else %}cell-off{% endif %}">
+                        {% if is_offline %}—{% else %}{{ r.mister }}{% endif %}
+                    </td>
+                    <td>
+                        {% if is_offline %}
+                            <span class="alert-status-badge status-danger">⛔ Hors ligne</span>
+                        {% else %}
+                            <span class="alert-status-badge status-ok">✓ En ligne</span>
+                        {% endif %}
+                    </td>
                     <td>
                         <span class="alert-status-badge
-                            {% if r.alert_level == 'critical' %}status-danger
-                            {% elif r.alert_level == 'notify' %}status-warning
+                            {% if r.edge_alert_level == 'critical' %}status-danger
+                            {% elif r.edge_alert_level == 'en_traitement' %}status-warning
                             {% else %}status-ok{% endif %}">
-                            {% if r.alert_level == 'critical' %}🚨 Critique
-                            {% elif r.alert_level == 'notify' %}🔔 Attention
+                            {% if r.edge_alert_level == 'critical' %}🚨 Critique
+                            {% elif r.edge_alert_level == 'en_traitement' %}🟡 En traitement
                             {% else %}✓ Normal{% endif %}
                         </span>
                     </td>
