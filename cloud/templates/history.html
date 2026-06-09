@@ -89,11 +89,11 @@
                     </td>
                     <td>
                         <span class="alert-status-badge
-                            {% if r.edge_alert_level == 'critical' %}status-danger
-                            {% elif r.edge_alert_level == 'en_traitement' %}status-warning
+                            {% if r.edge_alert_level == 'critique' %}status-danger
+                            {% elif r.edge_alert_level == 'attention' %}status-warning
                             {% else %}status-ok{% endif %}">
-                            {% if r.edge_alert_level == 'critical' %}🚨 Critique
-                            {% elif r.edge_alert_level == 'en_traitement' %}🟡 En traitement
+                            {% if r.edge_alert_level == 'critique' %}🚨 Critique
+                            {% elif r.edge_alert_level == 'attention' %}🟡 Attention
                             {% else %}✓ Normal{% endif %}
                         </span>
                     </td>

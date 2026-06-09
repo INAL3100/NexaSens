@@ -39,7 +39,7 @@
 <main>
     <h1 class="page-title">Alertes — {{ hangar_name }}</h1>
     <p style="font-size:11px;color:var(--text-muted);margin-bottom:12px">
-        Cliquez sur un statut pour le changer (Non traité → En cours → Traité)
+        Cliquez sur un statut pour le changer (Non traité → En traitement → Traité)
     </p>
 
     {% if alerts %}
@@ -62,12 +62,11 @@
                     <td>{{ a.message }}</td>
                     <td>
                         <span class="alert-status-badge
-                            {% if a.level == 'critical' %}status-danger
-                            {% elif a.level in ('en_traitement', 'notify') %}status-warning
+                            {% if a.level == 'critique' %}status-danger
+                            {% elif a.level == 'attention' %}status-warning
                             {% else %}status-ok{% endif %}">
-                            {% if a.level == 'critical' %}🚨 Critique
-                            {% elif a.level == 'en_traitement' %}🟡 En traitement
-                            {% elif a.level == 'notify' %}🔔 Attention
+                            {% if a.level == 'critique' %}🚨 Critique
+                            {% elif a.level == 'attention' %}🟡 Attention
                             {% else %}✓ Normal{% endif %}
                         </span>
                     </td>
@@ -96,14 +95,14 @@
 const HANGAR_ID = {{ hangar_id }};
 
 const CYCLE = {
-    'Non traité': 'En cours',
-    'En cours':   'Traité',
-    'Traité':     'Non traité'
+    'Non traité':    'En traitement',
+    'En traitement': 'Traité',
+    'Traité':        'Non traité'
 };
 const CLASS_FOR = {
-    'Non traité': 'status-danger',
-    'En cours':   'status-warning',
-    'Traité':     'status-ok'
+    'Non traité':    'status-danger',
+    'En traitement': 'status-warning',
+    'Traité':        'status-ok'
 };
 
 document.querySelectorAll('.status-clickable').forEach(btn => {

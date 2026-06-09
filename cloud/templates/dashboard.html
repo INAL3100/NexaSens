@@ -28,8 +28,8 @@
         {% for h in hangars %}
 
         {% if h.avg %}
-            {% if h.avg.alert_level == "critical" %}{% set cls = "card-critical" %}
-            {% elif h.avg.alert_level == "notify" %}{% set cls = "card-warning" %}
+            {% if h.avg.alert_level == "critique" %}{% set cls = "card-critical" %}
+            {% elif h.avg.alert_level == "attention" %}{% set cls = "card-warning" %}
             {% else %}{% set cls = "" %}{% endif %}
         {% else %}{% set cls = "" %}{% endif %}
 

@@ -27,7 +27,7 @@
 #   B12. hangar_page() now resolves AUTO equipment to Pi's last decision
 #
 # PUSH 4:
-#   - /receive accepts new level "en_traitement" (yellow)
+#   - /receive accepts new level "attention" (yellow)
 #   - Cloud is fully passive — Pi handles all alert lifecycle (escalation,
 #     stability, SMS, voice calls). Cloud just records what Pi says.
 # ============================================================
@@ -128,14 +128,14 @@ def init_db():
         heater      TEXT,
         mister      TEXT,
         ventilation TEXT,
-        alert_level TEXT DEFAULT 'log',
+        alert_level TEXT DEFAULT 'normal',
         alert       TEXT,
-        edge_alert_level TEXT DEFAULT 'log',
+        edge_alert_level TEXT DEFAULT 'normal',
         edge_status TEXT DEFAULT 'online',
         timestamp   TEXT)""")
     # Push 6: add columns if they don't exist (for existing DBs)
     for col, decl in [
-        ("edge_alert_level", "TEXT DEFAULT 'log'"),
+        ("edge_alert_level", "TEXT DEFAULT 'normal'"),
         ("edge_status",      "TEXT DEFAULT 'online'"),
     ]:
         try:
@@ -148,7 +148,7 @@ def init_db():
         node_id    TEXT,
         message    TEXT,
         alert_type TEXT    DEFAULT 'general',
-        level      TEXT    DEFAULT 'log',
+        level      TEXT    DEFAULT 'normal',
         status     TEXT    DEFAULT 'Non traité',
         timestamp  TEXT)""")
     conn.execute("""CREATE TABLE IF NOT EXISTS nsr_heartbeat (
@@ -279,7 +279,7 @@ def pi_watchdog():
                                 """INSERT INTO alerts
                                    (hangar_id, node_id, message, alert_type,
                                     level, status, timestamp)
-                                   VALUES (?,?,?,'pi_offline','critical','Non traité',?)""",
+                                   VALUES (?,?,?,'pi_offline','critique','Non traité',?)""",
                                 (hid, nsr_pin, msg, ts))
                         for (hid,) in query(
                                 "SELECT id FROM hangars WHERE nsr_pin=?", (nsr_pin,)):
@@ -416,15 +416,15 @@ def _build_hangar_summaries(uid, master_pin):
             # Push 6: alert_level from open alerts table (source of truth)
             open_alerts = query(
                 """SELECT level FROM alerts
-                   WHERE hangar_id=? AND status IN ('En cours','Non traité')
-                     AND level IN ('en_traitement','notify','critical')""",
+                   WHERE hangar_id=? AND status IN ('En traitement','Non traité')
+                     AND level IN ('attention','critique')""",
                 (hid,))
             if open_alerts:
-                level_order = {"critical": 3, "en_traitement": 2, "notify": 2, "log": 0}
+                level_order = {"critique": 3, "attention": 2, "normal": 0}
                 al = max((r[0] for r in open_alerts),
                          key=lambda x: level_order.get(x, 0))
             else:
-                al = "log"
+                al = "normal"
             eq_row = query(
                 "SELECT eq_fan, eq_heater, eq_mister, eq_ventilation FROM hangars WHERE id=?",
                 (hid,), one=True)
@@ -449,7 +449,7 @@ def _build_hangar_summaries(uid, master_pin):
             }
         alert_count = query(
             """SELECT COUNT(*) FROM alerts
-               WHERE hangar_id=? AND level='critical' AND status='Non traité'""",
+               WHERE hangar_id=? AND level='critique' AND status='Non traité'""",
             (hid,), one=True)[0]
         hangars.append({
             "id": hid, "name": name, "flock_age": age,
@@ -495,7 +495,7 @@ def hangar_page(hid):
                WHERE node_id=? AND hangar_id=? AND temperature IS NOT NULL
                ORDER BY id DESC LIMIT 1""",
             (node_id, hid), one=True)
-        al = "log"
+        al = "normal"
         if row and not offline:
             al = row[4]
         nodes[node_id] = {
@@ -504,7 +504,7 @@ def hangar_page(hid):
             "humidity":    row[1] if row else None,
             "ammonia":     row[2] if row else None,
             "timestamp":   row[3] if row else None,
-            "alert_level": "critical" if offline else al,
+            "alert_level": "critique" if offline else al,
             "offline":     offline
         }
 
@@ -520,15 +520,15 @@ def hangar_page(hid):
         # not from individual reading rows which may be stale.
         open_alerts = query(
             """SELECT level FROM alerts
-               WHERE hangar_id=? AND status IN ('En cours','Non traité')
-                 AND level IN ('en_traitement','notify','critical')""",
+               WHERE hangar_id=? AND status IN ('En traitement','Non traité')
+                 AND level IN ('attention','critique')""",
             (hid,))
         if open_alerts:
-            level_order = {"critical": 3, "en_traitement": 2, "notify": 2, "log": 0}
+            level_order = {"critique": 3, "attention": 2, "normal": 0}
             al = max((r[0] for r in open_alerts),
                      key=lambda x: level_order.get(x, 0))
         else:
-            al = "log"
+            al = "normal"
 
         last_reading = query(
             """SELECT fan, heater, mister, ventilation FROM readings
@@ -555,7 +555,7 @@ def hangar_page(hid):
     active_alerts = query(
         """SELECT id, node_id, message, level, status, timestamp
            FROM alerts
-           WHERE hangar_id=? AND status!='Traité' AND level!='log'
+           WHERE hangar_id=? AND status!='Traité' AND level!='normal'
            ORDER BY id DESC LIMIT 5""",
         (hid,))
     owner = query("SELECT user_id FROM hangars WHERE id=?", (hid,), one=True)
@@ -739,9 +739,9 @@ def control(hid, equipment, action):
 # RECEIVE DATA — Push 4 lifecycle
 #
 # Pi decides everything. Cloud just records the decision:
-#   - level == "en_traitement" → open alert as level=en_traitement (yellow)
-#   - level == "critical"      → upgrade existing or insert as critical (red)
-#   - level == "log"           → close all open alerts for this hangar/source
+#   - level == "attention" → open alert as level=en_traitement (yellow)
+#   - level == "critique"      → upgrade existing or insert as critical (red)
+#   - level == "normal"           → close all open alerts for this hangar/source
 # ═══════════════════════════════════════════════════════════════
 
 @app.route("/receive", methods=["POST"])
@@ -773,15 +773,20 @@ def receive():
         return jsonify({"error": f"PIN {pin} non enregistré"}), 403
     node_id, hid = row
 
-    execute("UPDATE nodes SET last_seen=? WHERE pin=?", (ts, pin))
+    # Push 7: offline-marker payloads carry edge_status='offline'. They must NOT
+    # refresh nodes.last_seen — otherwise the dashboard's "is this edge fresh?"
+    # check sees it as just-online and the NSR bar briefly re-renders red,
+    # which is confusing. last_seen represents "last real reading".
+    if data.get("edge_status") != "offline":
+        execute("UPDATE nodes SET last_seen=? WHERE pin=?", (ts, pin))
 
     fan    = data.get("fan")    or "OFF"
     heater = data.get("heater") or "OFF"
     mister = data.get("mister") or "OFF"
     ventil = data.get("ventilation") or "OFF"
-    level  = data.get("alert_level", "log")
+    level  = data.get("alert_level", "normal")
     msg    = data.get("alert",       "Normal")
-    edge_lvl = data.get("edge_alert_level", "log")
+    edge_lvl = data.get("edge_alert_level", "normal")
     edge_st  = data.get("edge_status",      "online")
 
     # Push 6: control payloads (e.g. reconnect close-alert signal) don't go in readings
@@ -814,22 +819,22 @@ def receive():
     # ── Push 5: Pi controls BOTH alert_level AND status ─────────────────
     # The cloud just writes what the Pi tells it. No autonomous decisions.
 
-    pi_status = data.get("alert_status")  # None | 'En cours' | 'Non traité' | 'Traité'
+    pi_status = data.get("alert_status")  # None | 'En traitement' | 'Non traité' | 'Traité'
 
-    if level in ("en_traitement", "notify"):
+    if level in ("attention", "notify"):
         # Find any open alert for this hangar+condition (regardless of current status)
         existing = query(
             """SELECT id FROM alerts
                WHERE hangar_id=? AND alert_type=?
-                 AND level IN ('en_traitement','notify')
-                 AND status IN ('En cours','Non traité')""",
+                 AND level IN ('attention',)
+                 AND status IN ('En traitement','Non traité')""",
             (hid, alert_type), one=True)
         if not existing:
             execute(
                 """INSERT INTO alerts
                    (hangar_id, node_id, message, alert_type, level, status, timestamp)
-                   VALUES (?,?,?,?,'en_traitement',?,?)""",
-                (hid, alert_source, msg_full, alert_type, pi_status or "En cours", ts))
+                   VALUES (?,?,?,?,'attention',?,?)""",
+                (hid, alert_source, msg_full, alert_type, pi_status or "En traitement", ts))
         else:
             # Just refresh the message + status the Pi sent
             if pi_status:
@@ -841,29 +846,29 @@ def receive():
                     """UPDATE alerts SET message=? WHERE id=?""",
                     (msg_full, existing[0]))
 
-    elif level == "critical":
+    elif level == "critique":
         # Promote any open en_traitement/notify for this condition to critical.
         # Use Pi's status (typically 'Non traité' on escalation).
         new_status = pi_status or "Non traité"
         execute(
             """UPDATE alerts
-                  SET level='critical', status=?, message=?
+                  SET level='critique', status=?, message=?
                 WHERE hangar_id=? AND alert_type=?
-                  AND level IN ('en_traitement','notify')
-                  AND status IN ('En cours','Non traité')""",
+                  AND level IN ('attention',)
+                  AND status IN ('En traitement','Non traité')""",
             (new_status, msg_full, hid, alert_type))
         if not query(
                 """SELECT id FROM alerts
                    WHERE hangar_id=? AND alert_type=?
-                     AND level='critical' AND status IN ('En cours','Non traité')""",
+                     AND level='critique' AND status IN ('En traitement','Non traité')""",
                 (hid, alert_type), one=True):
             execute(
                 """INSERT INTO alerts
                    (hangar_id, node_id, message, alert_type, level, status, timestamp)
-                   VALUES (?,?,?,?,'critical',?,?)""",
+                   VALUES (?,?,?,?,'critique',?,?)""",
                 (hid, alert_source, msg_full, alert_type, new_status, ts))
 
-    elif level == "log":
+    elif level == "normal":
         # Cloud does NOT auto-close. The Pi sends a separate alert_status='Traité'
         # in the SAME payload when the stability window finishes.
         pass
@@ -879,22 +884,22 @@ def receive():
             execute(
                 """UPDATE alerts SET status='Traité'
                    WHERE hangar_id=? AND alert_type=?
-                     AND status IN ('En cours','Non traité')
-                     AND level IN ('en_traitement','notify','critical')""",
+                     AND status IN ('En traitement','Non traité')
+                     AND level IN ('attention','critique')""",
                 (hid, pi_cond))
         else:
             execute(
                 """UPDATE alerts SET status='Traité'
                    WHERE hangar_id=?
-                     AND status IN ('En cours','Non traité')
-                     AND level IN ('en_traitement','notify','critical')
+                     AND status IN ('En traitement','Non traité')
+                     AND level IN ('attention','critique')
                      AND alert_type NOT LIKE 'offline_%'""",
                 (hid,))
 
     return jsonify({"ok": True, "node_id": node_id, "hangar_id": hid}), 200
 
 def _derive_alert_type(temp, hum, nh3, t, level):
-    if level == "log":               return "normal"
+    if level == "normal":               return "normal"
     if nh3  >= t["ammonia_max"] - 2: return "ammonia"
     if temp >= t["temp_max"]:        return "temp_high"
     if temp <= t["temp_min"]:        return "temp_low"
@@ -971,7 +976,7 @@ def history(hid):
             {"temperature": r[0], "humidity": r[1], "ammonia": r[2],
              "fan": r[3], "heater": r[4], "mister": r[5], "ventilation": r[6],
              "alert_level": r[7], "alert": r[8], "timestamp": r[9],
-             "edge_alert_level": r[10] or "log", "edge_status": r[11] or "online"}
+             "edge_alert_level": r[10] or "normal", "edge_status": r[11] or "online"}
             for r in query(
                 """SELECT temperature, humidity, ammonia,
                           fan, heater, mister, ventilation,
@@ -1019,7 +1024,7 @@ def update_alert(aid):
         return redirect("/login")
     hid    = request.form.get("hangar_id")
     status = request.form.get("status")
-    if status not in ("Non traité", "En cours", "Traité"):
+    if status not in ("Non traité", "En traitement", "Traité"):
         return redirect(f"/alerts/{hid}")
     if hid and not owns_hangar(int(hid)):
         return redirect("/")

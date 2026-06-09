@@ -31,8 +31,8 @@
 #
 # PUSH 4: Alert lifecycle overhaul
 #   - Pi tracks each condition's stability and escalation locally
-#   - When abnormal: emits "en_traitement" (the system is on it)
-#   - After ALERT_ESCALATION_SECONDS unresolved: upgrades to "critical"
+#   - When abnormal: emits "attention" (the system is on it)
+#   - After ALERT_ESCALATION_SECONDS unresolved: upgrades to "critique"
 #     + sends SMS + makes a silent call to the farmer
 #   - When normal again: requires ALERT_STABILITY_SECONDS of stable
 #     readings before emitting "log" (prevents flapping)
@@ -436,7 +436,7 @@ def decide(temp, hum, nh3, t, hangar_id):
 #
 # Per (pin, condition_type), we track:
 #   - opened_at:  when the condition first triggered (for escalation timer)
-#   - last_level: 'en_traitement' or 'critical' that we last emitted
+#   - last_level: 'attention' or 'critique' that we last emitted
 #   - last_msg:   the human message for the last abnormal level
 #   - stable_since: when we first saw a normal reading after this condition
 #                   (None if currently abnormal)
@@ -460,29 +460,29 @@ def _condition_type(temp, hum, nh3, t):
     if hum  <= t["hum_min"]:        return "hum_low"
     return None  # normal
 
-# Compute severity ("en_traitement" by default, "critical" if value is way out of range)
+# Compute severity ("attention" by default, "critique" if value is way out of range)
 def _severity(temp, hum, nh3, t, cond):
     if cond == "nh3":
         if nh3 >= t["ammonia_max"] + 2:
-            return "critical", f"🚨 Ammoniac critique: {nh3}ppm"
-        return "en_traitement", f"⚠️ Ammoniac élevé: {nh3}ppm"
+            return "critique", f"🚨 Ammoniac critique: {nh3}ppm"
+        return "attention", f"⚠️ Ammoniac élevé: {nh3}ppm"
     if cond == "temp_high":
         if temp >= t["temp_max"] + 2:
-            return "critical", f"🚨 Température critique: {temp}°C"
-        return "en_traitement", f"⚠️ Température élevée: {temp}°C"
+            return "critique", f"🚨 Température critique: {temp}°C"
+        return "attention", f"⚠️ Température élevée: {temp}°C"
     if cond == "temp_low":
         if temp <= t["temp_min"] - 2:
-            return "critical", f"🚨 Température trop basse: {temp}°C"
-        return "en_traitement", f"⚠️ Température basse: {temp}°C"
+            return "critique", f"🚨 Température trop basse: {temp}°C"
+        return "attention", f"⚠️ Température basse: {temp}°C"
     if cond == "hum_high":
         if hum >= t["hum_max"] + 4:
-            return "critical", f"🚨 Humidité critique: {hum}%"
-        return "en_traitement", f"⚠️ Humidité élevée: {hum}%"
+            return "critique", f"🚨 Humidité critique: {hum}%"
+        return "attention", f"⚠️ Humidité élevée: {hum}%"
     if cond == "hum_low":
         if hum <= t["hum_min"] - 4:
-            return "critical", f"🚨 Humidité trop basse: {hum}%"
-        return "en_traitement", f"⚠️ Humidité basse: {hum}%"
-    return "log", "Normal"
+            return "critique", f"🚨 Humidité trop basse: {hum}%"
+        return "attention", f"⚠️ Humidité basse: {hum}%"
+    return "normal", "Normal"
 
 # Per-(pin, cond) tracker
 # Per-pin latest reading: {pin: (temp, hum, nh3, hangar_id)}
@@ -501,12 +501,12 @@ def _notify_critical(hangar_id, msg):
 def _edge_level(temp, hum, nh3, t):
     """Push 6: per-edge alert classification based on THIS reading's values only.
     Used purely for history display, not for the hangar alert lifecycle.
-    Returns 'log' | 'en_traitement' | 'critical'."""
+    Returns 'log' | 'attention' | 'critique'."""
     cond = _condition_type(temp, hum, nh3, t)
     if cond is None:
-        return "log"
+        return "normal"
     sev, _msg = _severity(temp, hum, nh3, t, cond)
-    return sev   # 'en_traitement' or 'critical'
+    return sev   # 'attention' or 'critique'
 
 def _hangar_avg(hangar_id):
     """Average temp/hum/nh3 across all known pins in this hangar.
@@ -528,14 +528,14 @@ def check_alert(temp, hum, nh3, t, pin, hangar_id):
     """Decide level + status using HANGAR-LEVEL averages.
 
     Returns (level, msg, condition_type, status).
-       level    ∈ {'log', 'en_traitement', 'critical'}
+       level    ∈ {'log', 'attention', 'critique'}
        status   ∈ {None, 'En cours', 'Non traité', 'Traité'}
        cond     ∈ {None, 'nh3', 'temp_high', 'temp_low', 'hum_high', 'hum_low'}
 
     The Pi controls BOTH alert_level AND status. The cloud just writes them.
     Status mapping:
-      - en_traitement → 'En cours'  (system is working on it)
-      - critical      → 'Non traité' (Pi couldn't fix it, farmer needed)
+      - attention → 'En traitement'  (system is working on it)
+      - critique      → 'Non traité' (Pi couldn't fix it, farmer needed)
       - resolved      → 'Traité' (sent ONCE when alert fully clears)
     """
     now = time.time()
@@ -546,13 +546,13 @@ def check_alert(temp, hum, nh3, t, pin, hangar_id):
     # 2. Compute hangar averages
     avg = _hangar_avg(hangar_id)
     if avg is None:
-        return "log", "Normal", None, None
+        return "normal", "Normal", None, None
     avg_t, avg_h, avg_n = avg
 
     # 3. What's the active condition at hangar level?
     cond = _condition_type(avg_t, avg_h, avg_n, t)
 
-    LEVEL_ORDER = {"critical": 2, "en_traitement": 1, "log": 0}
+    LEVEL_ORDER = {"critique": 2, "attention": 1, "normal": 0}
 
     # ── Case A: hangar avg is abnormal ───────────────────────────
     if cond is not None:
@@ -571,34 +571,34 @@ def check_alert(temp, hum, nh3, t, pin, hangar_id):
                 "sms_sent":     False
             }
             _alert_state[key] = state
-            if sev == "critical" and not state["sms_sent"]:
+            if sev == "critique" and not state["sms_sent"]:
                 _notify_critical(hangar_id, msg)
                 state["sms_sent"] = True
-            status = "Non traité" if sev == "critical" else "En cours"
+            status = "Non traité" if sev == "critique" else "En traitement"
             return sev, msg, cond, status
 
         # Existing tracker, condition still abnormal
         state["stable_since"] = None
         state["last_msg"]     = msg
         elapsed = now - state["opened_at"]
-        already_critical = (state["last_level"] == "critical")
-        if sev == "critical" or elapsed >= ALERT_ESCALATION_SECONDS or already_critical:
-            if sev != "critical" and not already_critical:
+        already_critical = (state["last_level"] == "critique")
+        if sev == "critique" or elapsed >= ALERT_ESCALATION_SECONDS or already_critical:
+            if sev != "critique" and not already_critical:
                 msg = msg.replace("⚠️", "🚨") + f" — non résolu après {ALERT_ESCALATION_SECONDS}s"
-            state["last_level"] = "critical"
+            state["last_level"] = "critique"
             state["last_msg"]   = msg
             if not state["sms_sent"]:
                 _notify_critical(hangar_id, msg)
                 state["sms_sent"] = True
-            return "critical", msg, cond, "Non traité"
+            return "critique", msg, cond, "Non traité"
         else:
-            state["last_level"] = "en_traitement"
-            return "en_traitement", msg, cond, "En cours"
+            state["last_level"] = "attention"
+            return "attention", msg, cond, "En traitement"
 
     # ── Case B: hangar avg is normal ─────────────────────────────
     open_for_hangar = [(k, v) for k, v in _alert_state.items() if k[0] == hangar_id]
     if not open_for_hangar:
-        return "log", "Normal", None, None
+        return "normal", "Normal", None, None
 
     # Update stability counters
     any_still_pending = False
@@ -617,14 +617,14 @@ def check_alert(temp, hum, nh3, t, pin, hangar_id):
         remaining.sort(key=lambda kv: LEVEL_ORDER.get(kv[1]["last_level"], 0), reverse=True)
         top_key, top_state = remaining[0]
         # While stabilizing, keep current status (don't update it)
-        keep_status = "Non traité" if top_state["last_level"] == "critical" else "En cours"
+        keep_status = "Non traité" if top_state["last_level"] == "critique" else "En traitement"
         return top_state["last_level"], top_state["last_msg"], top_key[1], keep_status
 
     # All conditions fully cleared — send status='Traité' ONCE
     if hangar_id not in _resolved_announced:
         _resolved_announced.add(hangar_id)
-        return "log", "Normal", None, "Traité"
-    return "log", "Normal", None, None
+        return "normal", "Normal", None, "Traité"
+    return "normal", "Normal", None, None
 
 # ============================================================
 # CORE READING PROCESSOR
@@ -662,11 +662,11 @@ def process_reading(pin, temp, humidity, ammonia):
             "pin": pin,
             "temperature": None, "humidity": None, "ammonia": None,
             "fan": None, "heater": None, "mister": None, "ventilation": None,
-            "alert_level":      "log",
+            "alert_level":      "normal",
             "alert":            f"Capteur reconnecté: {pin}",
             "condition_type":   f"offline_{pin}",
             "alert_status":     "Traité",
-            "edge_alert_level": "log",
+            "edge_alert_level": "normal",
             "edge_status":      "online",
             "_skip_history":    True,
             "timestamp":        timestamp
@@ -862,11 +862,11 @@ def edge_watchdog():
                                 "pin": pin,
                                 "temperature": None, "humidity": None, "ammonia": None,
                                 "fan": None, "heater": None, "mister": None, "ventilation": None,
-                                "alert_level":      "critical",
+                                "alert_level":      "critique",
                                 "alert":            f"Capteur hors ligne: {pin}",
                                 "condition_type":   f"offline_{pin}",
                                 "alert_status":     "Non traité",
-                                "edge_alert_level": "critical",
+                                "edge_alert_level": "critique",
                                 "edge_status":      "offline",
                                 "timestamp":        ts
                             })
@@ -919,7 +919,7 @@ def power_monitor():
                     "pin": NSR_PIN,
                     "temperature": 0, "humidity": 0, "ammonia": 0,
                     "fan": "OFF", "heater": "OFF", "mister": "OFF", "ventilation": "OFF",
-                    "alert_level": "critical",
+                    "alert_level": "critique",
                     "alert": "Coupure d'alimentation détectée",
                     "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 })

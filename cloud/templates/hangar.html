@@ -72,7 +72,7 @@
 
     <!-- NSR-BOX TOP BAR -->
     {% if avg %}
-    <div class="nsr-bar {% if avg.alert_level == 'critical' %}nsr-bar-critical{% elif avg.alert_level in ('en_traitement', 'notify') %}nsr-bar-warning{% endif %}">
+    <div class="nsr-bar {% if avg.alert_level == 'critique' %}nsr-bar-critical{% elif avg.alert_level == 'attention' %}nsr-bar-warning{% endif %}">
         <div class="nsr-bar-left">
             <span class="nsr-bar-label">◈ NSR-BOX{% if hangar.nsr_pin %} · {{ hangar.nsr_pin }}{% endif %}</span>
             <span class="nsr-bar-sep">|</span>
@@ -80,10 +80,9 @@
             <span class="nsr-bar-val">💧 <strong>{{ avg.humidity }}%</strong></span>
             <span class="nsr-bar-val">☁️ <strong>{{ avg.ammonia }} ppm</strong></span>
         </div>
-        <span class="status-badge {% if avg.alert_level == 'critical' %}status-danger{% elif avg.alert_level in ('en_traitement', 'notify') %}status-warning{% else %}status-ok{% endif %}">
-            {% if avg.alert_level == 'critical' %}🚨 Critique
-            {% elif avg.alert_level == 'en_traitement' %}🟡 En traitement
-            {% elif avg.alert_level == 'notify' %}🔔 Attention
+        <span class="status-badge {% if avg.alert_level == 'critique' %}status-danger{% elif avg.alert_level == 'attention' %}status-warning{% else %}status-ok{% endif %}">
+            {% if avg.alert_level == 'critique' %}🚨 Critique
+            {% elif avg.alert_level == 'attention' %}🟡 Attention
             {% else %}✓ Normal{% endif %}
         </span>
     </div>
@@ -260,17 +259,16 @@
         {% for node_id, data in nodes.items() %}
 
         {% if data.offline %}{% set ecls = "edge-offline" %}
-        {% elif data.alert_level == 'critical' %}{% set ecls = "edge-critical" %}
-        {% elif data.alert_level in ('en_traitement', 'notify') %}{% set ecls = "edge-warning" %}
+        {% elif data.alert_level == 'critique' %}{% set ecls = "edge-critical" %}
+        {% elif data.alert_level == 'attention' %}{% set ecls = "edge-warning" %}
         {% else %}{% set ecls = "" %}{% endif %}
 
         <div class="edge-card {{ ecls }}">
             <div class="edge-left">
                 <span class="node-name">{{ node_id }} · {{ data.pin }}</span>
                 {% if data.offline %}<span class="edge-status offline-badge">⛔ Hors ligne</span>
-                {% elif data.alert_level == 'critical' %}<span class="edge-status critical-badge">🚨 Critique</span>
-                {% elif data.alert_level == 'en_traitement' %}<span class="edge-status warning-badge">🟡 En traitement</span>
-                {% elif data.alert_level == 'notify' %}<span class="edge-status warning-badge">🔔 Attention</span>
+                {% elif data.alert_level == 'critique' %}<span class="edge-status critical-badge">🚨 Critique</span>
+                {% elif data.alert_level == 'attention' %}<span class="edge-status warning-badge">🟡 Attention</span>
                 {% else %}<span class="edge-status ok-badge">✓ Normal</span>{% endif %}
             </div>
 
