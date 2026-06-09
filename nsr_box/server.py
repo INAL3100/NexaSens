@@ -65,7 +65,7 @@ MQTT_TOPIC    = "nexasens/edge/+/data"
 # Both configurable via env vars so demo/testing can shorten them.
 # Production defaults: 600s escalation, 120s stability.
 ALERT_ESCALATION_SECONDS = int(os.environ.get("ALERT_ESCALATION_SECONDS", "90"))
-ALERT_STABILITY_SECONDS  = int(os.environ.get("ALERT_STABILITY_SECONDS",  "60"))
+ALERT_STABILITY_SECONDS  = int(os.environ.get("ALERT_STABILITY_SECONDS",  "40"))
 
 # ── GSM MODEM ─────────────────────────────────────────────────
 GSM_ENABLED  = False
