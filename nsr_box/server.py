@@ -668,6 +668,7 @@ def process_reading(pin, temp, humidity, ammonia):
             "alert_status":     "Traité",
             "edge_alert_level": "log",
             "edge_status":      "online",
+            "_skip_history":    True,
             "timestamp":        timestamp
         })
 

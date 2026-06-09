@@ -784,15 +784,17 @@ def receive():
     edge_lvl = data.get("edge_alert_level", "log")
     edge_st  = data.get("edge_status",      "online")
 
-    execute(
-        """INSERT INTO readings
-           (hangar_id, node_id, temperature, humidity, ammonia,
-            fan, heater, mister, ventilation, alert_level, alert,
-            edge_alert_level, edge_status, timestamp)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (hid, node_id, temp, humidity, ammonia,
-         fan, heater, mister, ventil, level, msg,
-         edge_lvl, edge_st, ts))
+    # Push 6: control payloads (e.g. reconnect close-alert signal) don't go in readings
+    if not data.get("_skip_history"):
+        execute(
+            """INSERT INTO readings
+               (hangar_id, node_id, temperature, humidity, ammonia,
+                fan, heater, mister, ventilation, alert_level, alert,
+                edge_alert_level, edge_status, timestamp)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (hid, node_id, temp, humidity, ammonia,
+             fan, heater, mister, ventil, level, msg,
+             edge_lvl, edge_st, ts))
 
     # Push 4 v2: trust the Pi's condition_type (authoritative source).
     # Falls back to derived value for old payloads without the field.
