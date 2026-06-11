@@ -991,6 +991,43 @@ def startup_sync():
 threading.Thread(target=startup_sync, daemon=True).start()
 
 # ============================================================
+# CONFIG POLL — Pull config from cloud every 30s.
+# This replaces cloud→Pi push, which fails because Render servers
+# can't reach the Pi's private IP (192.168.x.x behind hotspot/NAT).
+# Pull is outbound from Pi → always works on any network.
+# ============================================================
+
+def config_poll():
+    # First poll happens 30s after startup_sync (which itself waits 5s).
+    time.sleep(35)
+    while True:
+        try:
+            res = requests.get(
+                f"{CLOUD_URL}/nsr_config/{NSR_PIN}",
+                headers={"X-API-KEY": API_KEY},
+                timeout=10
+            )
+            if res.status_code == 200:
+                data = res.json()
+                new_hangars = data.get("hangars", {})
+                # Only log if something actually changed (avoid spam)
+                if new_hangars != _hangar_config:
+                    _hangar_config.clear()
+                    _hangar_config.update(new_hangars)
+                    for hid_str in _hangar_config:
+                        _ensure_equipment(int(hid_str))
+                    for hid, cfg in _hangar_config.items():
+                        for pin in cfg.get("pins", []):
+                            if pin not in _edge_last_seen:
+                                _edge_last_seen[pin] = "1970-01-01 00:00:00"
+                    print(f"[CONFIG POLL] Config refreshed — {len(_hangar_config)} hangar(s)")
+        except Exception as e:
+            pass  # cloud may be down, retry next cycle
+        time.sleep(30)
+
+threading.Thread(target=config_poll, daemon=True).start()
+
+# ============================================================
 # RUN
 # ============================================================
 
