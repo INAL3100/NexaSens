@@ -74,7 +74,7 @@ GSM_BAUDRATE = 115200
 FARMER_PHONE = "+213XXXXXXXXX"
 
 # ── GPIO RELAYS ───────────────────────────────────────────────
-GPIO_ENABLED = False
+GPIO_ENABLED = True
 GPIO_PINS = {"fan": 17, "heater": 27, "mister": 22, "ventilation": 23}
 
 # ── UPS POWER MONITORING ──────────────────────────────────────
